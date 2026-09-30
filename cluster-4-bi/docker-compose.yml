@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  # -------------------------------------------------------------------
+  # 1. Cube.dev (Semantic Metrics Layer - Quản lý chỉ số Logistics tập trung)
+  # -------------------------------------------------------------------
+  cube:
+    image: cubejs/cube:v0.35.0
+    container_name: cube_semantic_layer
+    ports:
+      - "4000:4000"
+    environment:
+      CUBEJS_DB_TYPE: postgres
+      CUBEJS_DB_HOST: host.docker.internal
+      CUBEJS_DB_PORT: 5432
+      CUBEJS_DB_NAME: logistics_db
+      CUBEJS_DB_USER: oracle_user
+      CUBEJS_DB_PASS: oracle_password
+      CUBEJS_DEV_MODE: "true"
+
+  # -------------------------------------------------------------------
+  # 2. Apache Superset (Visual BI Dashboard & Self-service Analytics)
+  # -------------------------------------------------------------------
+  superset:
+    image: apache/superset:3.0.2
+    container_name: superset_bi
+    ports:
+      - "8088:8088"
+    environment:
+      SUPERSET_SECRET_KEY: "logistics_superset_secret_key"

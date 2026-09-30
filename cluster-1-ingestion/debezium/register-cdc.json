@@ -1,0 +1,17 @@
+{
+  "name": "logistics-cdc-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+    "plugin.name": "pgoutput",
+    "database.hostname": "oracle-db",
+    "database.port": "5432",
+    "database.user": "oracle_user",
+    "database.password": "oracle_password",
+    "database.dbname": "logistics_db",
+    "database.server.name": "logistics_server",
+    "topic.prefix": "cdc_logistics",
+    "table.include.list": "public.orders,public.shipments,public.customers,public.warehouses",
+    "tombstones.on.delete": "false"
+  }
+}
