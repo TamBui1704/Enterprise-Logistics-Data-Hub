@@ -1,0 +1,15 @@
+version: 2
+
+models:
+  - name: obt_shipment_analytics
+    description: "One Big Table (OBT) analytical data mart joining fact_shipment_bookings with all dimensions"
+    columns:
+      - name: BOOKING_ID
+        description: "Primary key for shipment booking"
+        tests:
+          - not_null
+          - unique
+      - name: TOTAL_REVENUE
+        description: "Total revenue amount in VND"
+        tests:
+          - not_null

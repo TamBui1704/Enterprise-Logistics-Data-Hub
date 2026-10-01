@@ -1,0 +1,12 @@
+dbt_logistics:
+  target: dev
+  outputs:
+    dev:
+      type: clickhouse
+      schema: default
+      host: clickhouse_dwh
+      port: 8123
+      user: default
+      password: ""
+      secure: False
+      verify: False

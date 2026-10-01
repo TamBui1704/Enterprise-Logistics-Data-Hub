@@ -1,6 +1,6 @@
 # 🚀 Hướng Dẫn Kiểm Thử Thông Luồng Dữ Liệu End-to-End (Data Pipeline Guide)
 
-Tài liệu hướng dẫn chi tiết quy trình khởi chạy và kiểm thử toàn bộ luồng dữ liệu từ **Oracle Database (OLTP Nguồn)** $\rightarrow$ **Debezium CDC** $\rightarrow$ **Apache Kafka** $\rightarrow$ **PySpark Structured Streaming** $\rightarrow$ **MinIO S3 Delta Lakehouse** $\rightarrow$ **ClickHouse DWH**.
+Tài liệu hướng dẫn chi tiết quy trình khởi chạy và kiểm thử toàn bộ luồng dữ liệu từ **Oracle Database (OLTP Nguồn)** $\rightarrow$ **Debezium CDC** $\rightarrow$ **Apache Kafka** $\rightarrow$ **PySpark Structured Streaming (Master/Worker Cluster)** $\rightarrow$ **MinIO S3 Delta Lakehouse** $\rightarrow$ **ClickHouse DWH**.
 
 ---
 
@@ -13,12 +13,13 @@ Tài liệu hướng dẫn chi tiết quy trình khởi chạy và kiểm thử 
 | **Debezium Connect** | `debezium_cdc` | `8083` | REST API Đăng ký Connector |
 | **Kafka UI** | `kafka_ui` | `8080` | Giao diện Web xem Topics & CDC Messages (`http://localhost:8080`) |
 | **MinIO Storage** | `minio_lakehouse` | `9000`, `9001` | S3 Object Storage Console (`http://localhost:9001`) |
-| **ClickHouse DWH** | `clickhouse_dwh` | `8123`, `9009` | Serving Data Warehouse OLAP |
-| **PySpark Master** | `spark_runner` | `8081`, `7077` | Spark Cluster Web UI (`http://localhost:8081`) |
+| **ClickHouse DWH** | `clickhouse_dwh` | `8123`, `9009` | Serving Data Warehouse OLAP (Default user: `default`, pass: rỗng) |
+| **PySpark Master** | `spark_runner` | `8081`, `7077` | Spark Master Web UI (`http://localhost:8081`) |
+| **PySpark Worker** | `spark_worker` | - | Spark Worker Node (Connected to Master `spark_runner:7077`) |
 
 ---
 
-## 🧠 2. KHIẾN TRÚC CHUYÊN SÂU: DEBEZIUM CDC & MEDALLION LAKEHOUSE
+## 🧠 2. KIẾN TRÚC CHUYÊN SÂU: DEBEZIUM CDC & MEDALLION LAKEHOUSE
 
 ```text
 ORACLE DB ──► DEBEZIUM CDC ──► KAFKA ──► BRONZE LAYER (Append-Only CDC Payloads)
@@ -53,12 +54,13 @@ Mở PowerShell / Terminal tại máy của bạn:
 cd cluster-1-ingestion
 docker compose up -d
 
-# 2. Khởi chạy Cluster 2 (MinIO S3, ClickHouse DWH, PySpark Runner)
+# 2. Khởi chạy Cluster 2 (MinIO S3, ClickHouse DWH, PySpark Master & Worker)
 cd ../cluster-2-lakehouse-dwh
 docker compose up -d
 ```
 
-> 🔍 **Kiểm tra trạng thái**: Gõ `docker ps`. Tất cả 7 container phải ở trạng thái `Up` (hoặc `healthy`).
+> 🔍 **Kiểm tra trạng thái**: Gõ `docker ps`. Tất cả 8 container phải ở trạng thái `Up` (hoặc `healthy`).
+> Kiểm tra Spark Master Web UI tại `http://localhost:8081` phải hiển thị **Alive Workers: 1** (`spark_worker`).
 
 ---
 
@@ -66,17 +68,18 @@ docker compose up -d
 
 Nạp dữ liệu ban đầu từ Oracle DB sang MinIO S3 Silver Layer:
 
-#### 🔹 Cách A: Chạy trực tiếp trên máy Local (Dành cho Dev / Test nhanh)
+#### 🔹 Cách A: Chạy trực tiếp trên máy Local (Dành cho Dev / Test nhanh - Mode Local)
 ```powershell
 cd cluster-2-lakehouse-dwh
 pip install -r requirements.txt
 python spark_jobs/oracle_bulk_initial_load.py
 ```
 
-#### 🔹 Cách B: Chạy bên trong Spark Container (Dành cho Airflow Production)
+#### 🔹 Cách B: Submit Job lên cụm Spark Standalone Cluster (Dành cho Production / Airflow)
 ```powershell
-docker exec -it spark_runner spark-submit /opt/bitnami/spark/spark_jobs/oracle_bulk_initial_load.py
+docker exec -it spark_runner spark-submit --master spark://spark_runner:7077 /opt/bitnami/spark/spark_jobs/oracle_bulk_initial_load.py
 ```
+> 💡 *Truyền cờ `--master spark://spark_runner:7077` giúp Spark Master (`spark_runner`) ghi nhận job lên Web UI (`http://localhost:8081`) và điều phối cho Spark Worker (`spark_worker`) thực thi.*
 
 ---
 
@@ -124,9 +127,9 @@ pip install -r requirements.txt
 python spark_jobs/kafka_to_delta.py
 ```
 
-#### 🔹 Cách B: Chạy bên trong Spark Container
+#### 🔹 Cách B: Submit Job lên cụm Spark Standalone Cluster
 ```powershell
-docker exec -it spark_runner spark-submit /opt/bitnami/spark/spark_jobs/kafka_to_delta.py
+docker exec -it spark_runner spark-submit --master spark://spark_runner:7077 /opt/bitnami/spark/spark_jobs/kafka_to_delta.py
 ```
 
 ---
@@ -142,28 +145,106 @@ pip install -r requirements.txt
 python spark_jobs/bronze_to_silver_medallion.py
 ```
 
-#### 🔹 Cách B: Chạy bên trong Spark Container
+#### 🔹 Cách B: Submit Job lên cụm Spark Standalone Cluster
 ```powershell
-docker exec -it spark_runner spark-submit /opt/bitnami/spark/spark_jobs/bronze_to_silver_medallion.py
+docker exec -it spark_runner spark-submit --master spark://spark_runner:7077 /opt/bitnami/spark/spark_jobs/bronze_to_silver_medallion.py
 ```
 
 ---
 
-## 🔍 4. QUY TRÌNH KIỂM TRA & KIỂM THU DỮ LIỆU ĐÃ ĐỔ VỀ S3 LAKEHOUSE
+### BƯỚC 7: Khởi Động Cluster 3 & Thực Thi dbt Transformations (dbt-clickhouse & Airflow)
 
-### 1. Kiểm tra qua MinIO Web Console UI (Trực quan nhất 🌐)
+#### 1. Khởi động Container Airflow + dbt-clickhouse (Cluster 3)
+```powershell
+cd cluster-3-dbt-airflow
+docker compose up -d --build
+```
+
+> 🔍 **Kiểm tra**: Mở Airflow Web UI tại `http://localhost:8085` (User: `admin` | Password: hiển thị trong log hoặc dùng command).
+
+#### 2. Thử nghiệm chạy dbt trực tiếp từ Container `airflow_orchestrator`
+
+Dự án `dbt_logistics` được chia thành **2 tầng rõ rệt**:
+* **Tầng `schema`**: Đọc dữ liệu Silver Parquet từ MinIO S3 nạp thành các bảng Star Schema (`dim_customers`, `dim_services`, `dim_pos_locations`, `dim_delivery_statuses`, `fact_shipment_bookings`).
+* **Tầng `datamart`**: Tự động JOIN tầng `schema` tạo thành bảng phẳng **One Big Table (OBT)** `obt_shipment_analytics` siêu tối ưu cho BI (Superset / Metabase) & Cube.dev.
+
+```powershell
+# 1. Run dbt models (Biến đổi nạp cả tầng schema và datamart OBT vào ClickHouse DWH)
+docker exec -it airflow_orchestrator dbt run --project-dir /opt/airflow/dbt_logistics --profiles-dir /opt/airflow/dbt_logistics
+
+# 2. Run dbt data quality tests (Kiểm tra ràng buộc unique, not_null trên tất cả các bảng)
+docker exec -it airflow_orchestrator dbt test --project-dir /opt/airflow/dbt_logistics --profiles-dir /opt/airflow/dbt_logistics
+```
+
+#### 3. Kích hoạt Airflow DAG điều phối tự động E2E
+Mở `http://localhost:8085` $\rightarrow$ Chọn DAG `e2e_logistics_data_pipeline` $\rightarrow$ Nhấn **Unpause** & **Trigger DAG**.
+DAG sẽ tự động chạy chuỗi 4 bước: `Spark Bulk Load` $\rightarrow$ `Spark Medallion` $\rightarrow$ `dbt run (schema + datamart)` $\rightarrow$ `dbt test`.
+
+---
+
+## 🔍 4. QUY TRÌNH KIỂM TRA & KIỂM THU DỮ LIỆU S3 LAKEHOUSE & CLICKHOUSE DWH
+
+### 1. Kiểm tra qua MinIO Web Console UI (Object Storage 🌐)
 1. Truy cập `http://localhost:9001` (User: `minioadmin` | Password: `minioadminpassword`).
 2. Vào **Object Browser** $\rightarrow$ chọn Bucket **`logistics-lakehouse`**:
    * Kiểm tra thư mục `bronze/shipment_bookings/`: Các file `.parquet` thô + thư mục `_delta_log/`.
    * Kiểm tra thư mục `silver/value_shipment_bookings/`: Bản ghi hiện tại 1:1.
    * Kiểm tra thư mục `silver/history_shipment_bookings/`: Bản ghi lưu vết SCD Type 2 (`valid_from`, `valid_to`, `is_current`).
 
-### 2. Kiểm tra qua DBeaver + ClickHouse SQL
-Mở DBeaver kết nối tới ClickHouse (`localhost:8123`) và gõ SQL đọc trực tiếp dữ liệu từ MinIO S3:
+### 2. Kiểm tra ClickHouse DWH (Serving OLAP Layer ⚡)
+
+Tài khoản kết nối ClickHouse mặc định:
+* **Host**: `localhost` | **HTTP Port**: `8123` | **Native Port**: `9009`
+* **Username**: `default` | **Password**: *(bỏ trống / empty)*
+
+#### 🔹 Phương án A: Dùng GUI Tool (DBeaver / DataGrip)
+1. Tạo Connection chọn driver **ClickHouse**.
+2. Nhập Host: `localhost`, Port: `8123` (HTTP) hoặc `9009` (Native TCP), User: `default`, Password: *(bỏ trống)*.
+3. **Chạy các câu lệnh SQL nghiệm thu dữ liệu tầng Schema & Datamart OBT**:
+
 ```sql
-SELECT * 
-FROM s3('http://minio:9000/logistics-lakehouse/silver/value_shipment_bookings/*.parquet', 'minioadmin', 'minioadminpassword')
+-- 1. Xem danh sách các bảng vừa được dbt tạo ra trong ClickHouse
+SHOW TABLES;
+
+-- 2. Kiểm tra dữ liệu bảng OBT Analytics Mart (One Big Table)
+SELECT 
+    BOOKING_ID, 
+    ITEM_CODE, 
+    CUSTOMER_NAME, 
+    SERVICE_NAME,
+    SENDING_PROVINCE, 
+    RECEIVING_PROVINCE, 
+    STATUS_NAME,
+    TOTAL_REVENUE, 
+    COST_AMOUNT, 
+    PROFIT_AMOUNT
+FROM default.obt_shipment_analytics
 LIMIT 10;
+
+-- 3. Truy vấn thống kê tổng hợp Doanh thu & Lợi nhuận theo Tỉnh gửi từ bảng OBT
+SELECT 
+    SENDING_PROVINCE,
+    count() AS TOTAL_BOOKINGS,
+    sum(TOTAL_REVENUE) AS REVENUE_VND,
+    sum(PROFIT_AMOUNT) AS PROFIT_VND
+FROM default.obt_shipment_analytics
+GROUP BY SENDING_PROVINCE
+ORDER BY REVENUE_VND DESC;
+```
+
+#### 🔹 Phương án B: Kết nối trực tiếp bằng CLI trong Container
+```powershell
+# Vô giao diện dòng lệnh ClickHouse Client
+docker exec -it clickhouse_dwh clickhouse-client
+
+# Gõ các lệnh SQL kiểm tra:
+SHOW TABLES;
+SELECT count() FROM default.obt_shipment_analytics;
+```
+
+#### 🔹 Phương án C: Kiểm tra nhanh qua cURL (Terminal / PowerShell)
+```powershell
+curl "http://localhost:8123/?query=SELECT+count()+FROM+default.obt_shipment_analytics"
 ```
 
 ---
@@ -180,3 +261,5 @@ Invoke-RestMethod -Uri "http://localhost:8083/connectors/oracle-logistics-fact-c
 # 3. Xóa Connector (khi cần làm lại snapshot)
 Invoke-RestMethod -Uri "http://localhost:8083/connectors/oracle-logistics-fact-connector" -Method Delete
 ```
+
+

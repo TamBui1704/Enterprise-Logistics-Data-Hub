@@ -1,0 +1,47 @@
+version: 2
+
+models:
+  - name: dim_customers
+    description: "Customer dimension table transformed from Silver S3 Parquet"
+    columns:
+      - name: CUSTOMER_ID
+        description: "Primary key for customer"
+        tests:
+          - not_null
+          - unique
+
+  - name: dim_services
+    description: "Service dimension table transformed from Silver S3 Parquet"
+    columns:
+      - name: SERVICE_ID
+        description: "Primary key for service"
+        tests:
+          - not_null
+          - unique
+
+  - name: dim_pos_locations
+    description: "POS location dimension table transformed from Silver S3 Parquet"
+    columns:
+      - name: POS_CODE
+        description: "Primary key for POS location"
+        tests:
+          - not_null
+          - unique
+
+  - name: dim_delivery_statuses
+    description: "Delivery status dimension table transformed from Silver S3 Parquet"
+    columns:
+      - name: STATUS_ID
+        description: "Primary key for delivery status"
+        tests:
+          - not_null
+          - unique
+
+  - name: fact_shipment_bookings
+    description: "Fact table for shipment bookings transformed from Silver S3 Parquet"
+    columns:
+      - name: BOOKING_ID
+        description: "Primary key for shipment booking"
+        tests:
+          - not_null
+          - unique

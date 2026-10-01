@@ -62,6 +62,26 @@ services:
     networks:
       - logistics_net
 
+  pyspark-worker:
+    image: custom-spark-runner:3.5.0
+    container_name: spark_worker
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark_runner:7077
+      - SPARK_WORKER_MEMORY=1G
+      - SPARK_WORKER_CORES=1
+    volumes:
+      - ./spark_jobs:/opt/bitnami/spark/spark_jobs
+    depends_on:
+      - pyspark
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
+    networks:
+      - logistics_net
+
+
 networks:
   logistics_net:
     name: logistics_net

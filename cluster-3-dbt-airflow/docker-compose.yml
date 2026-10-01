@@ -2,16 +2,32 @@ version: '3.8'
 
 services:
   # -------------------------------------------------------------------
-  # Apache Airflow Orchestrator (Điều phối luồng DAG D-1 / Real-time Batch)
+  # Apache Airflow Orchestrator & dbt Runner (Cluster 3)
   # -------------------------------------------------------------------
-  airflow-standalone:
-    image: apache/airflow:2.8.1-python3.10
+  airflow:
+    build: .
+    image: custom-airflow-dbt:2.8.1
     container_name: airflow_orchestrator
     environment:
       - AIRFLOW__CORE__EXECUTOR=SequentialExecutor
       - AIRFLOW__CORE__SQL_ALCHEMY_CONN=sqlite:////opt/airflow/airflow.db
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
       - AIRFLOW__WEBSERVER__SECRET_KEY=logistics_secret_key
+      - DBT_PROFILES_DIR=/opt/airflow/dbt_logistics
     ports:
-      - "8085:8080"
+      - "8085:8080"   # Airflow Web UI
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./dbt_logistics:/opt/airflow/dbt_logistics
+      - /var/run/docker.sock:/var/run/docker.sock # Cho phép Airflow trigger Docker container
     command: standalone
+    deploy:
+      resources:
+        limits:
+          memory: 2048M
+    networks:
+      - logistics_net
+
+networks:
+  logistics_net:
+    name: logistics_net
