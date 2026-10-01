@@ -31,6 +31,7 @@ Hệ thống Data Hub & Data Lakehouse thử nghiệm theo kiến trúc Modern D
 
 ```text
 Enterprise-Logistics-Data-Hub/
+├── GUIDE_END_TO_END_TESTING.md   # Hướng dẫn chi tiết kiểm thử thông luồng End-to-End
 ├── cluster-1-ingestion/          # Cụm 1: CDC Ingestion (Oracle DB + Debezium + Kafka)
 │   ├── docker-compose.yml
 │   ├── debezium/
@@ -45,3 +46,10 @@ Enterprise-Logistics-Data-Hub/
     ├── cube/
     └── superset/
 ```
+
+---
+
+## 📖 Hướng Dẫn Kiểm Thử
+
+Xem tài liệu chi tiết quy trình chạy và kiểm thử thông luồng dữ liệu tại: [GUIDE_END_TO_END_TESTING.md](file:///c:/Users/buith/OneDrive/Desktop/Enterprise-Logistics-Data-Hub/GUIDE_END_TO_END_TESTING.md)
+

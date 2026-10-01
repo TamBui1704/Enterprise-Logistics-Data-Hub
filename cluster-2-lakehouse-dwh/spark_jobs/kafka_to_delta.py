@@ -1,20 +1,20 @@
 """
 PySpark Structured Streaming Job
-Đọc dữ liệu CDC từ Apache Kafka Topic -> Xử lý & Ghi vào MinIO Delta Lake (Bronze / Silver)
-và Đồng bộ sang ClickHouse DWH (Gold Layer)
+Đọc dữ liệu CDC thô từ Apache Kafka (Debezium Oracle) -> Parse Debezium Envelope (gồm op: r/c/u/d)
+-> Ghi Append-Only vào MinIO Delta Lake Bronze Layer (Immutability Data Lakehouse)
 """
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import from_json, col, expr
-from pyspark.sql.types import StructType, StructField, StringType, DoubleType, TimestampType
+from pyspark.sql.functions import from_json, col, current_timestamp
+from pyspark.sql.types import StructType, StructField, StringType, DoubleType, LongType, TimestampType
 
 def build_spark_session():
     return SparkSession.builder \
-        .appName("Logistics-Kafka-CDC-to-Lakehouse") \
+        .appName("EMS-Logistics-Kafka-CDC-to-Bronze-Delta") \
         .config("spark.jars.packages", 
                 "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,"
                 "io.delta:delta-spark_2.12:3.1.0,"
-                "com.clickhouse:clickhouse-jdbc:0.6.0") \
+                "org.apache.hadoop:hadoop-aws:3.3.4") \
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog") \
         .config("spark.hadoop.fs.s3a.endpoint", "http://localhost:9000") \
@@ -25,39 +25,71 @@ def build_spark_session():
         .getOrCreate()
 
 def main():
-    print("⚡ Đang khởi tạo Spark Structured Streaming Engine...")
+    print("⚡ Khởi tạo Spark Streaming Engine nạp Raw CDC sang Bronze Delta Layer...")
     spark = build_spark_session()
     spark.sparkContext.setLogLevel("WARN")
 
-    # Schema CDC từ Debezium Kafka
-    schema = StructType([
-        StructField("order_id", StringType(), True),
-        StructField("customer_id", StringType(), True),
-        StructField("warehouse_id", StringType(), True),
-        StructField("total_amount", StringType(), True),
-        StructField("status", StringType(), True),
-        StructField("updated_at", StringType(), True)
+    # Debezium Record Payload Schema (Bao gồm op: r = read/snapshot, c = create, u = update, d = delete)
+    booking_after_schema = StructType([
+        StructField("BOOKING_ID", StringType(), True),
+        StructField("ITEM_CODE", StringType(), True),
+        StructField("CUSTOMER_ID", StringType(), True),
+        StructField("SERVICE_ID", StringType(), True),
+        StructField("SENDING_POS_CODE", StringType(), True),
+        StructField("RECEIVING_POS_CODE", StringType(), True),
+        StructField("WEIGHT_GRAM", LongType(), True),
+        StructField("WEIGHT_TIER_ID", StringType(), True),
+        StructField("ROUTING_TYPE_ID", StringType(), True),
+        StructField("TOTAL_REVENUE", DoubleType(), True),
+        StructField("COST_AMOUNT", DoubleType(), True),
+        StructField("STATUS_ID", StringType(), True)
     ])
 
-    print("📥 Đang kết nối tới Apache Kafka Topic 'cdc_logistics.public.orders'...")
+    debezium_envelope_schema = StructType([
+        StructField("before", booking_after_schema, True),
+        StructField("after", booking_after_schema, True),
+        StructField("op", StringType(), True),      # 'r' = read (snapshot), 'c' = create, 'u' = update, 'd' = delete
+        StructField("ts_ms", LongType(), True)      # Timestamp miligiây từ Debezium CDC
+    ])
+
+    topic_name = "cdc_logistics_oracle.DEBEZIUM.SHIPMENT_BOOKINGS"
+    print(f"📥 Đang kết nối tới Apache Kafka Topic '{topic_name}'...")
+    
     kafka_df = spark.readStream \
         .format("kafka") \
         .option("kafka.bootstrap.servers", "localhost:9092") \
-        .option("subscribe", "cdc_logistics.public.orders") \
+        .option("subscribe", topic_name) \
         .option("startingOffsets", "earliest") \
         .load()
 
-    # Parse JSON payload từ Debezium CDC
-    parsed_df = kafka_df.selectExpr("CAST(value AS STRING) as json_payload") \
-        .select(from_json(col("json_payload"), schema).alias("data")) \
-        .select("data.*")
+    # Parse JSON Debezium Payload & bổ sung Metadata Kafka + Ingested_at
+    parsed_df = kafka_df.select(
+        col("key").cast("string").alias("kafka_key"),
+        from_json(col("value").cast("string"), debezium_envelope_schema).alias("cdc_payload"),
+        col("topic").alias("kafka_topic"),
+        col("partition").alias("kafka_partition"),
+        col("offset").alias("kafka_offset"),
+        col("timestamp").alias("kafka_timestamp")
+    ).select(
+        "kafka_key",
+        "cdc_payload.op",
+        "cdc_payload.ts_ms",
+        "cdc_payload.after.*",
+        "kafka_topic",
+        "kafka_partition",
+        "kafka_offset",
+        "kafka_timestamp"
+    ).withColumn("ingested_at", current_timestamp())
 
-    print("🚀 Ghi luồng Streaming vào MinIO Delta Lake (s3a://logistics-lakehouse/delta/orders)...")
+    delta_path = "s3a://logistics-lakehouse/bronze/shipment_bookings"
+    checkpoint_path = "s3a://logistics-lakehouse/checkpoints/shipment_bookings"
+
+    print(f"🚀 Ghi luồng Streaming Append-Only vào MinIO Delta Lake Bronze ({delta_path})...")
     query = parsed_df.writeStream \
         .format("delta") \
         .outputMode("append") \
-        .option("checkpointLocation", "s3a://logistics-lakehouse/checkpoints/orders") \
-        .start("s3a://logistics-lakehouse/delta/orders")
+        .option("checkpointLocation", checkpoint_path) \
+        .start(delta_path)
 
     query.awaitTermination()
 

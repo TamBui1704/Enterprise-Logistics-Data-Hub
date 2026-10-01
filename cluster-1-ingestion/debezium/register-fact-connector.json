@@ -1,5 +1,5 @@
 {
-  "name": "oracle-logistics-cdc-connector",
+  "name": "oracle-logistics-fact-connector",
   "config": {
     "connector.class": "io.debezium.connector.oracle.OracleConnector",
     "tasks.max": "1",
@@ -11,9 +11,10 @@
     "database.pdb.name": "ORCLPDB1",
     "topic.prefix": "cdc_logistics_oracle",
     "schema.history.internal.kafka.bootstrap.servers": "kafka:29092",
-    "schema.history.internal.kafka.topic": "schema-changes.logistics",
-    "table.include.list": "DEBEZIUM.DIM_CUSTOMERS,DEBEZIUM.DIM_SERVICES,DEBEZIUM.DIM_POS_LOCATIONS,DEBEZIUM.DIM_WEIGHT_TIERS,DEBEZIUM.DIM_ROUTING_TYPES,DEBEZIUM.DIM_DELIVERY_STATUSES,DEBEZIUM.DIM_FAILURE_REASONS,DEBEZIUM.SHIPMENT_BOOKINGS,DEBEZIUM.DELIVERY_REMUNERATIONS,DEBEZIUM.RETURN_REMUNERATIONS,DEBEZIUM.SHIPMENT_EVENT_TRACKINGS",
+    "schema.history.internal.kafka.topic": "schema-changes.logistics.fact",
+    "table.include.list": "DEBEZIUM.SHIPMENT_BOOKINGS,DEBEZIUM.DELIVERY_REMUNERATIONS,DEBEZIUM.RETURN_REMUNERATIONS,DEBEZIUM.SHIPMENT_EVENT_TRACKINGS",
     "database.connection.adapter": "logminer",
+    "snapshot.mode": "schema_only",
     "signal.data.collection": "DEBEZIUM.DEBEZIUM_SIGNAL",
     "tombstones.on.delete": "false"
   }
