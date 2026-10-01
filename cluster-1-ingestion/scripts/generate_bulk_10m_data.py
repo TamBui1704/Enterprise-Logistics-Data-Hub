@@ -1,3 +1,4 @@
+import os
 import time
 import random
 import uuid
@@ -9,7 +10,7 @@ import oracledb
 DB_CONFIG = {
     "user": "debezium",
     "password": "dbz",
-    "dsn": "localhost:1521/ORCLPDB1"
+    "dsn": os.getenv("ORACLE_DSN", "localhost:1521/ORCLPDB1")
 }
 
 PROVINCES = [

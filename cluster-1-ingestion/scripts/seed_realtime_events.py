@@ -1,3 +1,4 @@
+import os
 import time
 import random
 import uuid
@@ -8,7 +9,7 @@ import oracledb
 DB_CONFIG = {
     "user": "debezium",
     "password": "dbz",
-    "dsn": "localhost:1521/ORCLPDB1"
+    "dsn": os.getenv("ORACLE_DSN", "localhost:1521/ORCLPDB1")
 }
 
 SERVICES = ["SERV-01", "SERV-02", "SERV-03", "SERV-04"]

@@ -4,6 +4,7 @@ Xử lý chính xác mã op Debezium CDC: 'r' (Read Snapshot), 'c' (Create), 'u'
 Tự động MERGE INTO Delta Lake, quản lý Cutoff Time và Data Lineage Metadata.
 """
 
+import os
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, lit, current_timestamp, when, row_number
 from pyspark.sql.window import Window
@@ -11,6 +12,7 @@ from delta.tables import DeltaTable
 import time
 
 def build_spark_session():
+    minio_endpoint = os.getenv("MINIO_ENDPOINT", "http://localhost:9000")
     return SparkSession.builder \
         .appName("EMS-Logistics-Medallion-Bronze-to-Silver") \
         .config("spark.jars.packages", 
@@ -18,7 +20,7 @@ def build_spark_session():
                 "org.apache.hadoop:hadoop-aws:3.3.4") \
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog") \
-        .config("spark.hadoop.fs.s3a.endpoint", "http://localhost:9000") \
+        .config("spark.hadoop.fs.s3a.endpoint", minio_endpoint) \
         .config("spark.hadoop.fs.s3a.access.key", "minioadmin") \
         .config("spark.hadoop.fs.s3a.secret.key", "minioadminpassword") \
         .config("spark.hadoop.fs.s3a.path.style.access", "true") \

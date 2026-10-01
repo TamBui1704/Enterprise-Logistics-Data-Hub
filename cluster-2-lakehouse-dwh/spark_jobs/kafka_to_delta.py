@@ -4,11 +4,13 @@ PySpark Structured Streaming Job
 -> Ghi Append-Only vào MinIO Delta Lake Bronze Layer (Immutability Data Lakehouse)
 """
 
+import os
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import from_json, col, current_timestamp
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType, LongType, TimestampType
 
 def build_spark_session():
+    minio_endpoint = os.getenv("MINIO_ENDPOINT", "http://localhost:9000")
     return SparkSession.builder \
         .appName("EMS-Logistics-Kafka-CDC-to-Bronze-Delta") \
         .config("spark.jars.packages", 
@@ -17,7 +19,7 @@ def build_spark_session():
                 "org.apache.hadoop:hadoop-aws:3.3.4") \
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog") \
-        .config("spark.hadoop.fs.s3a.endpoint", "http://localhost:9000") \
+        .config("spark.hadoop.fs.s3a.endpoint", minio_endpoint) \
         .config("spark.hadoop.fs.s3a.access.key", "minioadmin") \
         .config("spark.hadoop.fs.s3a.secret.key", "minioadminpassword") \
         .config("spark.hadoop.fs.s3a.path.style.access", "true") \
@@ -55,9 +57,10 @@ def main():
     topic_name = "cdc_logistics_oracle.DEBEZIUM.SHIPMENT_BOOKINGS"
     print(f"📥 Đang kết nối tới Apache Kafka Topic '{topic_name}'...")
     
+    kafka_bootstrap = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
     kafka_df = spark.readStream \
         .format("kafka") \
-        .option("kafka.bootstrap.servers", "localhost:9092") \
+        .option("kafka.bootstrap.servers", kafka_bootstrap) \
         .option("subscribe", topic_name) \
         .option("startingOffsets", "earliest") \
         .load()

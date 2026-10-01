@@ -5,11 +5,13 @@ PySpark Batch Initial Bulk Load Job
 Sử dụng khi khởi tạo dữ liệu ban đầu trước khi bật Debezium CDC Incremental Stream.
 """
 
+import os
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import current_timestamp, lit
 import time
 
 def build_spark_session():
+    minio_endpoint = os.getenv("MINIO_ENDPOINT", "http://localhost:9000")
     return SparkSession.builder \
         .appName("EMS-Logistics-Oracle-Initial-Bulk-Load-to-Silver") \
         .config("spark.jars.packages", 
@@ -18,7 +20,7 @@ def build_spark_session():
                 "com.oracle.database.jdbc:ojdbc8:21.9.0.0") \
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog") \
-        .config("spark.hadoop.fs.s3a.endpoint", "http://localhost:9000") \
+        .config("spark.hadoop.fs.s3a.endpoint", minio_endpoint) \
         .config("spark.hadoop.fs.s3a.access.key", "minioadmin") \
         .config("spark.hadoop.fs.s3a.secret.key", "minioadminpassword") \
         .config("spark.hadoop.fs.s3a.path.style.access", "true") \
@@ -32,7 +34,7 @@ def main():
     spark.sparkContext.setLogLevel("WARN")
 
     # Cấu hình JDBC Oracle DB
-    jdbc_url = "jdbc:oracle:thin:@localhost:1521/ORCLPDB1"
+    jdbc_url = os.getenv("ORACLE_JDBC_URL", "jdbc:oracle:thin:@localhost:1521/ORCLPDB1")
     connection_properties = {
         "user": "debezium",
         "password": "dbz",

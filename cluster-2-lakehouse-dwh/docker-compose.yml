@@ -14,6 +14,8 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadminpassword
     command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
     networks:
       - logistics_net
 
@@ -30,6 +32,8 @@ services:
       nofile:
         soft: 262144
         hard: 262144
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
     deploy:
       resources:
         limits:
@@ -41,7 +45,8 @@ services:
   # 3. Apache Spark / PySpark Runner (Xử lý Batch Initial Load & Streaming Delta)
   # -------------------------------------------------------------------
   pyspark:
-    image: bitnami/spark:3.5.0
+    build: .
+    image: custom-spark-runner:3.5.0
     container_name: spark_runner
     environment:
       - SPARK_MODE=master
@@ -60,6 +65,11 @@ services:
 networks:
   logistics_net:
     name: logistics_net
+
+volumes:
+  minio_data:
+  clickhouse_data:
+
 
 
 
