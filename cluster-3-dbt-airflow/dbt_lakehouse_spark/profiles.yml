@@ -1,0 +1,10 @@
+dbt_lakehouse_spark:
+  target: dev
+  outputs:
+    dev:
+      type: spark
+      method: thrift
+      schema: default
+      host: spark_runner
+      port: 10000
+      user: spark

@@ -1,9 +1,9 @@
 """
-Airflow DAG: End-to-End Logistics Data Pipeline
+Airflow DAG: End-to-End Multi-Project Logistics Data Pipeline
 Orchestrates:
-1. PySpark Initial Bulk Load / Medallion Batch (Cluster 2)
-2. dbt-clickhouse transformation models (Cluster 3 -> ClickHouse DWH)
-3. dbt Data Quality tests
+1. PySpark Initial Bulk Load & Streaming Medallion Batch (Cluster 2)
+2. dbt_lakehouse_spark Project: Clean CDC data from S3 Bronze -> Silver & Gold Delta Lake (Spark Cluster)
+3. dbt_warehouse_databricks Project: Load S3 Gold Delta OBT data into Databricks Unity Catalog & Run Data Quality Tests
 """
 
 from datetime import datetime, timedelta
@@ -23,10 +23,10 @@ default_args = {
 with DAG(
     "e2e_logistics_data_pipeline",
     default_args=default_args,
-    description="Full E2E Data Pipeline: Spark Medallion -> ClickHouse dbt Transformation",
+    description="Multi-Project E2E Pipeline: Spark Lakehouse S3 -> Databricks OLAP Warehouse",
     schedule_interval="@daily",
     catchup=False,
-    tags=["logistics", "spark", "dbt", "clickhouse"],
+    tags=["logistics", "spark", "databricks", "dbt_mesh"],
 ) as dag:
 
     # 1. Trigger Spark Bulk Initial Load via Docker exec on spark_runner
@@ -41,17 +41,23 @@ with DAG(
         bash_command="docker exec spark_runner spark-submit --master spark://spark_runner:7077 /opt/bitnami/spark/spark_jobs/bronze_to_silver_medallion.py",
     )
 
-    # 3. Trigger dbt run to build ClickHouse Staging & Fact Tables
-    dbt_run = BashOperator(
-        task_id="dbt_run_clickhouse_models",
-        bash_command="dbt run --project-dir /opt/airflow/dbt_logistics --profiles-dir /opt/airflow/dbt_logistics",
+    # 3. Project 1: dbt_lakehouse_spark (DE Team: Clean S3 Bronze -> Silver & Gold Delta Lake)
+    dbt_spark_lakehouse_run = BashOperator(
+        task_id="dbt_spark_lakehouse_run",
+        bash_command="dbt run --project-dir /opt/airflow/dbt_lakehouse_spark --profiles-dir /opt/airflow/dbt_lakehouse_spark",
     )
 
-    # 4. Trigger dbt test to validate Data Quality
-    dbt_test = BashOperator(
-        task_id="dbt_test_clickhouse_models",
-        bash_command="dbt test --project-dir /opt/airflow/dbt_logistics --profiles-dir /opt/airflow/dbt_logistics",
+    # 4. Project 2: dbt_warehouse_clickhouse (DA/AE Team: Load S3 Gold OBT -> Clickhouse OLAP Warehouse)
+    dbt_clickhouse_warehouse_run = BashOperator(
+        task_id="dbt_clickhouse_warehouse_run",
+        bash_command="dbt run --project-dir /opt/airflow/dbt_warehouse_clickhouse --profiles-dir /opt/airflow/dbt_warehouse_clickhouse",
     )
 
-    # Define Task Dependencies
-    spark_bulk_load >> spark_medallion_transform >> dbt_run >> dbt_test
+    # 5. Data Quality Tests on Clickhouse OLAP Warehouse
+    dbt_clickhouse_test = BashOperator(
+        task_id="dbt_clickhouse_test",
+        bash_command="dbt test --project-dir /opt/airflow/dbt_warehouse_clickhouse --profiles-dir /opt/airflow/dbt_warehouse_clickhouse",
+    )
+
+    # Task Dependencies Flow
+    spark_bulk_load >> spark_medallion_transform >> dbt_spark_lakehouse_run >> dbt_clickhouse_warehouse_run >> dbt_clickhouse_test

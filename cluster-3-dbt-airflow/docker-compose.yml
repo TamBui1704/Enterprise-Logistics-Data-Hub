@@ -18,7 +18,8 @@ services:
       - "8085:8080"   # Airflow Web UI
     volumes:
       - ./dags:/opt/airflow/dags
-      - ./dbt_logistics:/opt/airflow/dbt_logistics
+      - ./dbt_lakehouse_spark:/opt/airflow/dbt_lakehouse_spark
+      - ./dbt_warehouse_clickhouse:/opt/airflow/dbt_warehouse_clickhouse
       - /var/run/docker.sock:/var/run/docker.sock # Cho phép Airflow trigger Docker container
     command: standalone
     deploy:

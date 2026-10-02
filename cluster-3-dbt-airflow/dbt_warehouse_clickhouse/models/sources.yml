@@ -1,0 +1,8 @@
+version: 2
+
+sources:
+  - name: minio_s3_gold
+    description: "Clean Gold Layer OBT dataset pre-processed by dbt-spark on S3 Lakehouse"
+    tables:
+      - name: obt_shipment_analytics
+        description: "External table reading Delta/Parquet from S3"

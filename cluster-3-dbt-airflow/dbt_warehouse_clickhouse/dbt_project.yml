@@ -1,8 +1,8 @@
-name: 'dbt_logistics'
+name: 'dbt_warehouse_clickhouse'
 version: '1.0.0'
 config-version: 2
 
-profile: 'dbt_logistics'
+profile: 'dbt_warehouse_clickhouse'
 
 model-paths: ["models"]
 analysis-paths: ["analyses"]
@@ -16,8 +16,8 @@ clean-targets:
   - "dbt_packages"
 
 models:
-  dbt_logistics:
-    schema:
-      +materialized: table
+  dbt_warehouse_clickhouse:
     datamart:
       +materialized: table
+      +engine: MergeTree()
+      +order_by: "BOOKING_DATE"

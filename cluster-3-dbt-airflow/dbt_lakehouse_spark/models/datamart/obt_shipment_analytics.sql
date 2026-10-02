@@ -1,18 +1,17 @@
 {{ config(
     materialized='table',
-    engine='MergeTree()',
-    order_by='(STATUS_CODE, SENDING_PROVINCE, CREATED_AT)'
+    file_format='delta',
+    location_root='s3a://logistics-lakehouse/gold/datamart'
 ) }}
 
 /*
-  One Big Table (OBT) - Flat Analytical Data Mart
-  Joins fact_shipment_bookings with dim_customers, dim_services,
-  dim_pos_locations (sending & receiving) and dim_delivery_statuses
-  Optimized for high-speed OLAP BI dashboards and Cube.dev semantic layer.
+  Spark dbt Model: Gold Layer Clean OBT Table (One Big Table)
+  Pre-joins fact_shipment_bookings with dim_customers, dim_services,
+  dim_pos_locations and dim_delivery_statuses from Gold S3 Schema Layer.
+  Saved as Delta Lake at s3a://logistics-lakehouse/gold/datamart/obt_shipment_analytics.
 */
 
 SELECT
-    -- Fact Core Metrics & Key Identifiers
     f.BOOKING_ID,
     f.ITEM_CODE,
     f.BOOKING_DATE,
@@ -26,26 +25,26 @@ SELECT
     f.CREATED_AT,
     f.UPDATED_AT,
 
-    -- Customer Dimension Details
+    -- Customer Details
     c.CUSTOMER_ID,
     c.CUSTOMER_NAME,
     c.CUSTOMER_TYPE,
     c.PROVINCE AS CUSTOMER_PROVINCE,
     c.REGION AS CUSTOMER_REGION,
 
-    -- Service Dimension Details
+    -- Service Details
     s.SERVICE_ID,
     s.SERVICE_CODE,
     s.SERVICE_NAME,
     s.IS_INTERNATIONAL,
 
-    -- Sending POS Location Details
+    -- Sending POS Details
     sp.POS_CODE AS SENDING_POS_CODE,
     sp.POS_NAME AS SENDING_POS_NAME,
     sp.PROVINCE_NAME AS SENDING_PROVINCE,
     sp.REGION AS SENDING_REGION,
 
-    -- Receiving POS Location Details
+    -- Receiving POS Details
     rp.POS_CODE AS RECEIVING_POS_CODE,
     rp.POS_NAME AS RECEIVING_POS_NAME,
     rp.PROVINCE_NAME AS RECEIVING_PROVINCE,
@@ -57,7 +56,7 @@ SELECT
     st.STATUS_NAME,
     st.STATUS_GROUP,
 
-    now() AS obt_ingested_at
+    f.ingested_at
 
 FROM {{ ref('fact_shipment_bookings') }} f
 LEFT JOIN {{ ref('dim_customers') }} c ON f.CUSTOMER_ID = c.CUSTOMER_ID
