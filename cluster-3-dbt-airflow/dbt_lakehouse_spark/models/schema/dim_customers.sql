@@ -16,5 +16,7 @@ SELECT
     TAX_CODE,
     PROVINCE,
     REGION,
-    CREATED_AT
+    CREATED_AT,
+    ingested_at
 FROM delta.`s3a://logistics-lakehouse/silver/value_dim_customers`
+

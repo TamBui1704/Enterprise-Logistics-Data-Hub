@@ -1,6 +1,9 @@
 {{ config(
-    materialized='table',
+    materialized='incremental',
     file_format='delta',
+    incremental_strategy='merge',
+    unique_key='BOOKING_ID',
+    partition_by=['BOOKING_DATE'],
     location_root='s3a://logistics-lakehouse/gold/datamart'
 ) }}
 
@@ -8,13 +11,13 @@
   Spark dbt Model: Gold Layer Clean OBT Table (One Big Table)
   Pre-joins fact_shipment_bookings with dim_customers, dim_services,
   dim_pos_locations and dim_delivery_statuses from Gold S3 Schema Layer.
-  Saved as Delta Lake at s3a://logistics-lakehouse/gold/datamart/obt_shipment_analytics.
+  Saved incrementally as Delta Lake at s3a://logistics-lakehouse/gold/datamart/obt_shipment_analytics.
 */
 
 SELECT
     f.BOOKING_ID,
     f.ITEM_CODE,
-    f.BOOKING_DATE,
+    CAST(f.BOOKING_DATE AS DATE) AS BOOKING_DATE,
     f.WEIGHT_GRAM,
     f.MAIN_FEE,
     f.SUR_FEE,
@@ -64,3 +67,26 @@ LEFT JOIN {{ ref('dim_services') }} s ON f.SERVICE_ID = s.SERVICE_ID
 LEFT JOIN {{ ref('dim_pos_locations') }} sp ON f.SENDING_POS_CODE = sp.POS_CODE
 LEFT JOIN {{ ref('dim_pos_locations') }} rp ON f.RECEIVING_POS_CODE = rp.POS_CODE
 LEFT JOIN {{ ref('dim_delivery_statuses') }} st ON f.STATUS_ID = st.STATUS_ID
+
+{% if is_incremental() %}
+  {% set max_obt_ingested_at = "(SELECT COALESCE(MAX(ingested_at), CAST('1900-01-01 00:00:00' AS TIMESTAMP)) FROM " ~ this ~ ")" %}
+
+  WHERE f.ingested_at > {{ max_obt_ingested_at }}
+     OR f.CUSTOMER_ID IN (
+         SELECT CUSTOMER_ID FROM {{ ref('dim_customers') }} WHERE ingested_at > {{ max_obt_ingested_at }}
+     )
+     OR f.SERVICE_ID IN (
+         SELECT SERVICE_ID FROM {{ ref('dim_services') }} WHERE ingested_at > {{ max_obt_ingested_at }}
+     )
+     OR f.SENDING_POS_CODE IN (
+         SELECT POS_CODE FROM {{ ref('dim_pos_locations') }} WHERE ingested_at > {{ max_obt_ingested_at }}
+     )
+     OR f.RECEIVING_POS_CODE IN (
+         SELECT POS_CODE FROM {{ ref('dim_pos_locations') }} WHERE ingested_at > {{ max_obt_ingested_at }}
+     )
+     OR f.STATUS_ID IN (
+         SELECT STATUS_ID FROM {{ ref('dim_delivery_statuses') }} WHERE ingested_at > {{ max_obt_ingested_at }}
+     )
+{% endif %}
+
+

@@ -3,6 +3,7 @@
     file_format='delta',
     incremental_strategy='merge',
     unique_key='BOOKING_ID',
+    partition_by=['BOOKING_DATE'],
     location_root='s3a://logistics-lakehouse/gold/schema'
 ) }}
 
@@ -14,7 +15,7 @@
 SELECT
     BOOKING_ID,
     ITEM_CODE,
-    BOOKING_DATE,
+    CAST(BOOKING_DATE AS DATE) AS BOOKING_DATE,
     CUSTOMER_ID,
     SERVICE_ID,
     SENDING_POS_CODE,
@@ -34,5 +35,6 @@ SELECT
 FROM delta.`s3a://logistics-lakehouse/silver/value_shipment_bookings`
 
 {% if is_incremental() %}
-  WHERE ingested_at > (SELECT max(ingested_at) FROM {{ this }})
+  WHERE ingested_at > (SELECT COALESCE(MAX(ingested_at), CAST('1900-01-01 00:00:00' AS TIMESTAMP)) FROM {{ this }})
 {% endif %}
+
