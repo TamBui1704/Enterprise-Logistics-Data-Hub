@@ -1,0 +1,51 @@
+cubes:
+  - name: DriverShifts
+    # Trỏ vào bảng OBT thứ 2 (dành cho Fact thứ 2 trong mô hình Chòm Sao)
+    sql: SELECT * FROM default.obt_driver_shifts
+
+    measures:
+      - name: totalShifts
+        type: count
+        title: Tổng Ca Chạy
+
+      - name: totalDistanceKm
+        sql: DISTANCE_KM
+        type: sum
+        title: Tổng Quãng Đường (Km)
+
+    dimensions:
+      - name: shiftId
+        sql: SHIFT_ID
+        type: string
+        primary_key: true
+
+      - name: shiftDate
+        sql: SHIFT_DATE
+        type: time
+        title: Ngày Chạy
+
+      - name: driverName
+        sql: DRIVER_NAME
+        type: string
+        title: Tên Tài Xế
+
+      # Dimension dùng chung với OBT Shipments (Ví dụ tài xế xuất phát từ trạm nào)
+      - name: sendingProvince
+        sql: SENDING_PROVINCE
+        type: string
+        title: Tỉnh Xuất Phát
+
+    # BẬT PRE-AGGREGATION MẪU
+    pre_aggregations:
+      - name: distanceByDriverAndDate
+        measures:
+          - totalDistanceKm
+          - totalShifts
+        dimensions:
+          - driverName
+          - sendingProvince
+        time_dimension: shiftDate
+        granularity: day
+        partition_granularity: month
+        refresh_key:
+          every: 1 hour

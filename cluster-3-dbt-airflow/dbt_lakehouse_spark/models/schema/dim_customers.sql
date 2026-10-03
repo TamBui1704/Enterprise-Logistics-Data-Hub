@@ -1,9 +1,3 @@
-{{ config(
-    materialized='table',
-    file_format='delta',
-    location_root='s3a://logistics-lakehouse/gold/schema'
-) }}
-
 /*
   Spark dbt Model: Customer Dimension Table in Gold Layer S3
   Source: Silver S3 value_dim_customers

@@ -164,16 +164,19 @@ docker compose up -d --build
 
 #### 2. Thử nghiệm chạy dbt trực tiếp từ Container `airflow_orchestrator`
 
-Dự án `dbt_logistics` được chia thành **2 tầng rõ rệt**:
-* **Tầng `schema`**: Đọc dữ liệu Silver Parquet từ MinIO S3 nạp thành các bảng Star Schema (`dim_customers`, `dim_services`, `dim_pos_locations`, `dim_delivery_statuses`, `fact_shipment_bookings`).
-* **Tầng `datamart`**: Tự động JOIN tầng `schema` tạo thành bảng phẳng **One Big Table (OBT)** `obt_shipment_analytics` siêu tối ưu cho BI (Superset / Metabase) & Cube.dev.
+Quá trình biến đổi dbt được chia thành **2 project riêng biệt**:
+* **`dbt_lakehouse_spark` (Chạy trên cụm Spark)**: Đọc dữ liệu Silver từ MinIO nạp thành các bảng Star Schema và tạo sẵn bảng OBT trên Delta Lake S3.
+* **`dbt_warehouse_clickhouse` (Chạy trên ClickHouse)**: Đọc file OBT Delta từ S3 nạp vào ClickHouse dưới dạng `ReplacingMergeTree` (bảng `obt_shipment_analytics_base`) và tạo Wrapper View `obt_shipment_analytics` siêu tối ưu và chống duplicate cho BI (Superset / Metabase).
 
 ```powershell
-# 1. Run dbt models (Biến đổi nạp cả tầng schema và datamart OBT vào ClickHouse DWH)
-docker exec -it airflow_orchestrator dbt run --project-dir /opt/airflow/dbt_logistics --profiles-dir /opt/airflow/dbt_logistics
+# 1. Run dbt Spark (Biến đổi S3 Silver -> S3 Gold Delta Lake)
+docker exec -it airflow_orchestrator dbt run --project-dir /opt/airflow/dbt_lakehouse_spark --profiles-dir /opt/airflow/dbt_lakehouse_spark
 
-# 2. Run dbt data quality tests (Kiểm tra ràng buộc unique, not_null trên tất cả các bảng)
-docker exec -it airflow_orchestrator dbt test --project-dir /opt/airflow/dbt_logistics --profiles-dir /opt/airflow/dbt_logistics
+# 2. Run dbt ClickHouse (Nạp S3 Gold OBT -> ClickHouse DWH & tạo View)
+docker exec -it airflow_orchestrator dbt run --project-dir /opt/airflow/dbt_warehouse_clickhouse --profiles-dir /opt/airflow/dbt_warehouse_clickhouse
+
+# 3. Run dbt data quality tests
+docker exec -it airflow_orchestrator dbt test --project-dir /opt/airflow/dbt_warehouse_clickhouse --profiles-dir /opt/airflow/dbt_warehouse_clickhouse
 ```
 
 #### 3. Kích hoạt Airflow DAG điều phối tự động E2E
@@ -205,8 +208,11 @@ Tài khoản kết nối ClickHouse mặc định:
 ```sql
 -- 1. Xem danh sách các bảng vừa được dbt tạo ra trong ClickHouse
 SHOW TABLES;
+-- 💡 Bạn sẽ thấy 2 bảng: obt_shipment_analytics_base (Bảng vật lý chứa dữ liệu incremental) 
+-- và obt_shipment_analytics (Wrapper View tự động gỡ duplicate cho DA)
 
--- 2. Kiểm tra dữ liệu bảng OBT Analytics Mart (One Big Table)
+-- 2. Kiểm tra dữ liệu bảng OBT Analytics Mart qua Wrapper View
+-- DA chỉ cần truy vấn View này, mọi duplicate do append đều được giải quyết ngầm
 SELECT 
     BOOKING_ID, 
     ITEM_CODE, 

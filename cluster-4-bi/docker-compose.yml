@@ -8,15 +8,20 @@ services:
     image: cubejs/cube:v0.35.0
     container_name: cube_semantic_layer
     ports:
-      - "4000:4000"
+      - "4000:4000"     # REST/GraphQL API & Developer Playground
+      - "15432:5432"    # Cổng SQL API (Mạo danh Postgres) dành cho Superset
     environment:
-      CUBEJS_DB_TYPE: postgres
-      CUBEJS_DB_HOST: host.docker.internal
-      CUBEJS_DB_PORT: 5432
-      CUBEJS_DB_NAME: logistics_db
-      CUBEJS_DB_USER: oracle_user
-      CUBEJS_DB_PASS: oracle_password
-      CUBEJS_DEV_MODE: "true"
+      - CUBEJS_DB_TYPE=clickhouse
+      - CUBEJS_DB_HOST=host.docker.internal
+      - CUBEJS_DB_PORT=8123
+      - CUBEJS_DB_NAME=default
+      - CUBEJS_DB_USER=default
+      - CUBEJS_DB_PASS=
+      - CUBEJS_DEV_MODE=true
+      - CUBEJS_API_SECRET=logistics-super-secret
+      - CUBEJS_PG_SQL_PORT=5432
+    volumes:
+      - ./cube_conf:/cube/conf
 
   # -------------------------------------------------------------------
   # 2. Apache Superset (Visual BI Dashboard & Self-service Analytics)

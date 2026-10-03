@@ -1,9 +1,3 @@
-{{ config(
-    materialized='table',
-    file_format='delta',
-    location_root='s3a://logistics-lakehouse/gold/schema'
-) }}
-
 SELECT
     POS_CODE,
     POS_NAME,

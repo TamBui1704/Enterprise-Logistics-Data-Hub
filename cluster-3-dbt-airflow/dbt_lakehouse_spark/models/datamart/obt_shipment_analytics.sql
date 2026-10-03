@@ -1,10 +1,8 @@
 {{ config(
     materialized='incremental',
-    file_format='delta',
     incremental_strategy='merge',
     unique_key='BOOKING_ID',
-    partition_by=['BOOKING_DATE'],
-    location_root='s3a://logistics-lakehouse/gold/datamart'
+    partition_by=['BOOKING_DATE']
 ) }}
 
 /*

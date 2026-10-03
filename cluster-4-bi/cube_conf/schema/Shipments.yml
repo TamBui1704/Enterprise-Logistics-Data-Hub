@@ -1,0 +1,75 @@
+cubes:
+  - name: Shipments
+    sql: SELECT * FROM default.obt_shipment_analytics
+
+    # LUẬT RLS (ROW LEVEL SECURITY) TẠI TẦNG CUBE
+    # Luật này sẽ tự động gắn WHERE vào mọi câu lệnh dựa trên Security Context của User kết nối
+    query_rewrite:
+      - name: enforce_rls
+        sql: |
+          {COMPILE_CONTEXT.securityContext.province_access} = 'ALL' 
+          OR SENDING_PROVINCE IN ( {COMPILE_CONTEXT.securityContext.province_access} )
+
+
+    # 1. MEASURES (Các chỉ số đo lường)
+    measures:
+      - name: totalBookings
+        type: count
+        title: Tổng Số Đơn Hàng
+
+      - name: totalRevenue
+        sql: TOTAL_REVENUE
+        type: sum
+        title: Tổng Doanh Thu (VND)
+        format: currency
+
+      - name: totalProfit
+        sql: PROFIT_AMOUNT
+        type: sum
+        title: Tổng Lợi Nhuận (VND)
+        format: currency
+
+    # 2. DIMENSIONS (Các chiều phân tích)
+    dimensions:
+      - name: bookingId
+        sql: BOOKING_ID
+        type: string
+        primary_key: true
+        title: Mã Đơn Hàng
+
+      - name: bookingDate
+        sql: BOOKING_DATE
+        type: time
+        title: Ngày Gửi Hàng
+
+      - name: sendingProvince
+        sql: SENDING_PROVINCE
+        type: string
+        title: Tỉnh Gửi
+
+      - name: receivingProvince
+        sql: RECEIVING_PROVINCE
+        type: string
+        title: Tỉnh Nhận
+
+      - name: statusName
+        sql: STATUS_NAME
+        type: string
+        title: Trạng Thái Đơn
+
+    # 3. PRE-AGGREGATIONS (Tối ưu hóa)
+    # TẠM TẮT ĐỂ CUBE CHẠY REAL-TIME (Chọc thẳng xuống ClickHouse)
+    # Nếu muốn bật, bỏ comment (#) các dòng dưới đây:
+    # pre_aggregations:
+    #   - name: revenueByProvinceAndDate
+    #     measures:
+    #       - totalRevenue
+    #       - totalBookings
+    #     dimensions:
+    #       - sendingProvince
+    #       - statusName
+    #     time_dimension: bookingDate
+    #     granularity: day
+    #     partition_granularity: month
+    #     refresh_key:
+    #       every: 1 hour
