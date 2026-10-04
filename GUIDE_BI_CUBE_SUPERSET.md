@@ -106,21 +106,21 @@ Nếu bạn đã quen với **Microsoft SSAS (Tabular / MOLAP)**, bạn sẽ th�
   👉 *Lưu ý:* Cube **VẪN HỖ TRỢ JOIN** y hệt SSAS (bằng thuộc tính `joins:` trong file YAML). Nếu lượng dữ liệu Dim của bạn không quá lớn, bạn hoàn toàn có thể định nghĩa 1 file `DimLocations.yml` và Join nó vào các Fact. Nhưng để đạt hiệu năng tối đa (hàng tỷ dòng), OBT vẫn là vua.
 
 ### 5.2. Quản trị Người dùng (Users) & Phân quyền dữ liệu (RLS - Row Level Security)
+
 Tư duy của bạn hoàn toàn chính xác! Nếu Semantic Layer là trái tim phục vụ cho cả Superset, Excel Pivot và các AI Agents (như ChatGPT gọi API hỏi số liệu), thì **việc phân quyền RLS BẮT BUỘC PHẢI DIỄN RA Ở CUBE**. Nếu ta phân quyền trên Superset, một nhân viên dùng Excel hoặc một con AI gọi API tới Cube sẽ dễ dàng vượt mặt (bypass) quy định bảo mật đó.
 
-Đây chính xác là triết lý của SSAS ngày xưa, và Cube sinh ra để làm điều này một cách cực kỳ thanh lịch thông qua **Security Context**.
+**Kiến trúc Đề Xuất (Keycloak + ClickHouse + Cube.js):**
+Thay vì dùng AD/LDAP truyền thống, Modern Data Stack sử dụng **Identity Provider (IdP)** như **Keycloak** kết hợp với bảng phân quyền lưu trên Data Warehouse (ClickHouse).
 
-**Cách làm trên Cube (Tích hợp AD và Bảng Phân Quyền):**
-1. **Quản lý quyền động qua Database (Dynamic RLS):** File `cube.js` thực chất là một môi trường Node.js hoàn chỉnh. Bạn hoàn toàn có thể biến hàm `checkSqlAuth` thành hàm `async`. Khi User nhập tài khoản, Cube sẽ thực hiện 2 việc:
-   * Gọi lên **Active Directory (AD/LDAP)** để xác thực mật khẩu.
-   * Query xuống một bảng tên là `Dim_User_Permissions` trên CSDL (Postgres hoặc ClickHouse) để lấy danh sách các tỉnh mà user đó được cấp quyền.
-2. **Nạp Security Context & Kích hoạt RLS trong YML:** Sau khi lấy được dữ liệu từ bảng phân quyền, hàm JavaScript đẩy mảng các tỉnh đó vào biến `securityContext`. Ở file `Shipments.yml`, khối `query_rewrite` sẽ tự động đọc mảng này và kẹp điều kiện `OR SENDING_PROVINCE IN (...)` vào lệnh SQL để khóa chặt phạm vi dữ liệu.
+1. **Centralized IAM với Keycloak:** Keycloak đóng vai trò trung tâm quản lý tài khoản duy nhất (SSO). Bạn tạo tài khoản, đổi mật khẩu ở đây. Keycloak có thể quản lý đăng nhập (OIDC/SAML) cho toàn bộ hệ sinh thái của bạn, bao gồm Superset, MinIO, Airflow, dbt, (tương tự như AWS IAM quản lý S3, Athena...).
+2. **Lưu trữ Bảng Phân Quyền tại ClickHouse:** Cấu hình ma trận phân quyền (Ai được xem tỉnh nào, ngành hàng nào) sẽ được thiết kế thành một bảng `dim_user_permissions` lưu trên ClickHouse. Điều này giúp Data Engineer dễ dàng bảo trì và cập nhật quyền hàng loạt bằng các luồng ETL/dbt.
+3. **Thực thi quyền động (Dynamic RLS) qua Cube.js:** 
+   * Khi Superset hoặc AI Agent truy xuất dữ liệu từ Cube, chúng phải đính kèm một **JWT (JSON Web Token)** do Keycloak cấp.
+   * File `cube.js` (trong hàm `checkAuth`) sẽ giải mã và xác thực Token này để lấy username. Tiếp theo, nó sẽ gọi một truy vấn (Async) xuống bảng `dim_user_permissions` ở ClickHouse để lấy danh sách tỉnh thành mà user được xem.
+   * Danh sách này được đưa vào biến môi trường `securityContext`.
+   * Tại các file `.yml` định nghĩa Cube (ví dụ `Shipments.yml`), tính năng `query_rewrite` (hoặc data access rules) sẽ đọc mảng từ `securityContext` và tự động kẹp điều kiện (ví dụ `WHERE SENDING_PROVINCE IN (...)`) vào câu lệnh SQL trước khi đẩy xuống ClickHouse.
 
-*(Tôi đã cập nhật lại file [`cube.js`](file:///home/tambt/Desktop/Enterprise-Logistics-Data-Hub/cluster-4-bi/cube_conf/cube.js) mẫu với đoạn code mô phỏng việc gọi hàm Async xuống Database / AD. Bạn có thể mở ra xem kiến trúc code thực tế).*
-
-👉 *Kết quả:* Kiến trúc này y hệt mô hình chuẩn của SSAS: Không ai biết password của ai, dữ liệu quyền được sửa trên Database là có tác dụng ngay lập tức, và bất kể truy cập từ Excel hay AI, mọi truy vấn đều bị lọc cứng ngắc ở tầng Semantic Layer!
-
-👉 *Kết quả:* Bây giờ sếp tổng nối Excel bằng tài khoản `admin_tong` sẽ thấy toàn quốc. Quản lý miền Nam nối Superset bằng tài khoản `quan_ly_mn` (khai báo tài khoản này lúc tạo kết nối Database trên Superset) thì mọi biểu đồ chỉ hiện số liệu miền Nam. Tuyệt đối bảo mật ở cấp độ Core!
+👉 *Kết quả:* Kiến trúc này an toàn tuyệt đối và mở rộng vô hạn. Bạn chỉ cần tạo User 1 lần ở Keycloak. Mọi hệ thống trong Cluster đều dùng Keycloak để xác thực. Khi truy vấn dữ liệu, lưới lọc Row-Level Security tự động lấy rules từ ClickHouse và khóa chặt phạm vi dữ liệu ở tầng Cube. Sếp tổng thấy toàn quốc, quản lý miền Nam chỉ thấy số liệu miền Nam một cách hoàn toàn tự động!
 
 ### 5.3. Khả năng Ad-hoc Query (Kỳ vọng thay thế Excel nối SSAS qua IIS)
 Superset đáp ứng hoàn hảo nhu cầu Ad-hoc Query của bạn qua 2 công cụ:
@@ -131,3 +131,70 @@ Superset đáp ứng hoàn hảo nhu cầu Ad-hoc Query của bạn qua 2 công 
 Bạn nhớ cổng `15432` của Cube chứ? Cube tự giả lập mình là một Postgres Server. Nếu DAs của bạn vẫn "yêu" Excel / PowerBI, họ chỉ cần vào Excel $\rightarrow$ **Get Data from PostgreSQL** $\rightarrow$ Nhập IP máy chủ và cổng `15432`. Họ có thể dùng thẳng Pivot Table của Excel kéo thả dữ liệu tỷ dòng y hệt như đang cắm vào SSAS ngày xưa!
 
 🎉 **Hoàn tất!** Giờ đây bạn đã có một Data Platform E2E toàn diện.
+
+---
+
+## 6. Hướng dẫn Tích hợp Keycloak & Row-Level Security trên ClickHouse
+
+Để đưa hệ thống lên chuẩn Enterprise bảo mật, chúng ta bổ sung **Keycloak** làm SSO (Single Sign-On) và tạo bảng lưu cấu hình quyền hạn (RLS - Row-Level Security) trên **ClickHouse**.
+
+### 6.1. Khởi chạy cụm IAM (Keycloak)
+Tôi đã tạo sẵn file cấu hình `docker-compose.yml` trong thư mục `cluster-0-iam/`.
+1. Mở Terminal, di chuyển vào thư mục và chạy:
+   ```bash
+   cd cluster-0-iam && docker compose up -d
+   ```
+2. Truy cập Keycloak Admin Console tại: `http://localhost:8080` (User: `admin`, Pass: `admin`).
+3. Tại đây bạn có thể tạo Realm, tạo Client (cho Cube và Superset), và tạo các Users (VD: `nguyenvana`, `admin`).
+
+### 6.2. Thiết kế bảng Phân Quyền (Mapping Table) trên ClickHouse
+Thay vì dùng Code DAX hoặc SQL Server để lưu quyền như cũ, trên ClickHouse bạn tạo một bảng danh mục (Dimension) chứa thông tin User và phạm vi dữ liệu họ được phép xem.
+
+*Kịch bản:* User truy cập Ad-hoc (Excel) hoặc qua Superset. Cube.js sẽ đọc bảng này để khóa dữ liệu.
+
+```sql
+-- Chạy trên ClickHouse DB
+CREATE TABLE IF NOT EXISTS dim_user_permissions (
+    username String,           -- Tên đăng nhập lấy từ Keycloak (VD: nguyenvana)
+    role String,               -- Vai trò (admin, manager, staff)
+    province_access Array(String), -- Danh sách tỉnh thành được phép xem
+    updated_at DateTime DEFAULT now()
+) ENGINE = MergeTree()
+ORDER BY username;
+
+-- Insert dữ liệu mẫu:
+INSERT INTO dim_user_permissions (username, role, province_access) VALUES 
+('admin', 'admin', ['ALL']),
+('nguyenvana', 'manager', ['Hồ Chí Minh', 'Đồng Nai']);
+```
+*(Bạn có thể dùng dbt để tạo và cập nhật bảng này tự động từ các nguồn dữ liệu HR/CRM).*
+
+### 6.3. Giải thích Code RLS trên Cube.js (cube.js & .yml)
+Tôi đã cập nhật file `cluster-4-bi/cube_conf/cube.js` để bao phủ cả 2 luồng truy cập:
+
+*   **Hàm `checkSqlAuth`:** Khi người dùng mở Excel hoặc Superset, họ kết nối vào giao thức Postgres giả lập của Cube (Cổng 15432). Cube lấy User/Pass, gọi lên Keycloak để xác thực. Nếu đúng, Cube gọi Query xuống bảng `dim_user_permissions` trên ClickHouse lấy mảng `['Hồ Chí Minh', 'Đồng Nai']` và nạp vào **`securityContext`**.
+*   **Hàm `checkAuth`:** Khi AI Agent hoặc ứng dụng Web gọi REST API của Cube, chúng gửi kèm mã JWT. Cube giải mã JWT lấy username, và cũng nạp mảng phân quyền vào **`securityContext`**.
+
+**Cách Cube ép buộc (Enforce) RLS vào câu SQL:**
+Trong file định nghĩa Cube (VD: `Shipments.yml`), bạn chỉ cần thêm đoạn mã `query_rewrite` (hoặc data_access_rules) như sau:
+
+```yaml
+cubes:
+  - name: Shipments
+    sql: SELECT * FROM obt_shipments
+    
+    # Kích hoạt Row-Level Security
+    query_rewrite:
+      # Nếu province_access có chữ ALL -> Bỏ qua không filter.
+      # Nếu không, kẹp câu điều kiện tự động: WHERE SENDING_PROVINCE IN ('Hồ Chí Minh', 'Đồng Nai')
+      sql: >
+        {% if COMPILE_CONTEXT.securityContext.province_access != 'ALL' %}
+          SELECT * FROM (${COMPILE_CONTEXT.sql}) AS tbl 
+          WHERE tbl.sending_province IN ({{ COMPILE_CONTEXT.securityContext.province_access | join: ", " | quote }})
+        {% else %}
+          ${COMPILE_CONTEXT.sql}
+        {% endif %}
+```
+
+👉 **Tổng kết Luồng:** 
+Keycloak quản lý thông tin User $\rightarrow$ ClickHouse giữ logic phân quyền $\rightarrow$ Cube.js đóng vai trò "cửa khẩu" kẹp điều kiện WHERE vào mọi câu Query $\rightarrow$ Superset và Ad-hoc Excel hiển thị kết quả an toàn.
