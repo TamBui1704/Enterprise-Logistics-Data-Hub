@@ -3,13 +3,20 @@ cubes:
     sql: SELECT * FROM default.obt_shipment_analytics
 
     # LUẬT RLS (ROW LEVEL SECURITY) TẠI TẦNG CUBE
-    # Luật này sẽ tự động gắn WHERE vào mọi câu lệnh dựa trên Security Context của User kết nối
+    # Tự động chèn câu lệnh WHERE lọc theo tỉnh thành dựa trên securityContext lấy từ ClickHouse + Keycloak
     query_rewrite:
       - name: enforce_rls
         sql: |
-          {COMPILE_CONTEXT.securityContext.province_access} = 'ALL' 
-          OR SENDING_PROVINCE IN ( {COMPILE_CONTEXT.securityContext.province_access} )
-
+          {% if COMPILE_CONTEXT.securityContext.province_access contains 'ALL' or COMPILE_CONTEXT.securityContext.role == 'ADMIN' %}
+            ${COMPILE_CONTEXT.sql}
+          {% else %}
+            SELECT * FROM (${COMPILE_CONTEXT.sql}) AS rls_tbl 
+            WHERE rls_tbl.SENDING_PROVINCE IN (
+              {% for p in COMPILE_CONTEXT.securityContext.province_access %}
+                '{{ p }}'{% if not loop.last %},{% endif %}
+              {% endfor %}
+            )
+          {% endif %}
 
     # 1. MEASURES (Các chỉ số đo lường)
     measures:
@@ -58,8 +65,6 @@ cubes:
         title: Trạng Thái Đơn
 
     # 3. PRE-AGGREGATIONS (Tối ưu hóa)
-    # TẠM TẮT ĐỂ CUBE CHẠY REAL-TIME (Chọc thẳng xuống ClickHouse)
-    # Nếu muốn bật, bỏ comment (#) các dòng dưới đây:
     # pre_aggregations:
     #   - name: revenueByProvinceAndDate
     #     measures:

@@ -11,7 +11,7 @@ services:
     volumes:
       - keycloak_db_data:/var/lib/postgresql/data
     networks:
-      - data_hub_network
+      - logistics_net
 
   keycloak:
     image: quay.io/keycloak/keycloak:22.0.1
@@ -30,11 +30,11 @@ services:
     depends_on:
       - keycloak_db
     networks:
-      - data_hub_network
+      - logistics_net
 
 networks:
-  data_hub_network:
-    external: true
+  logistics_net:
+    name: logistics_net
 
 volumes:
   keycloak_db_data:
