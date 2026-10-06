@@ -7,8 +7,8 @@
     "database.port": "1521",
     "database.user": "c##dbzuser",
     "database.password": "dbz",
-    "database.dbname": "ORCLCDB",
-    "database.pdb.name": "ORCLPDB1",
+    "database.dbname": "FREE",
+    "database.pdb.name": "FREEPDB1",
     "topic.prefix": "cdc_logistics_oracle",
     "schema.history.internal.kafka.bootstrap.servers": "kafka:29092",
     "schema.history.internal.kafka.topic": "schema-changes.logistics.dim",
@@ -16,6 +16,7 @@
     "database.connection.adapter": "logminer",
     "snapshot.mode": "initial",
     "signal.data.collection": "DEBEZIUM.DEBEZIUM_SIGNAL",
-    "tombstones.on.delete": "false"
+    "tombstones.on.delete": "false",
+    "database.url": "jdbc:oracle:thin:@//oracle-db:1521/FREE"
   }
 }

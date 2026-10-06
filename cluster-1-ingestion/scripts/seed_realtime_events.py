@@ -9,7 +9,7 @@ import oracledb
 DB_CONFIG = {
     "user": "debezium",
     "password": "dbz",
-    "dsn": os.getenv("ORACLE_DSN", "localhost:1521/ORCLPDB1")
+    "dsn": os.getenv("ORACLE_DSN", "localhost:1521/FREEPDB1")
 }
 
 SERVICES = ["SERV-01", "SERV-02", "SERV-03", "SERV-04"]
