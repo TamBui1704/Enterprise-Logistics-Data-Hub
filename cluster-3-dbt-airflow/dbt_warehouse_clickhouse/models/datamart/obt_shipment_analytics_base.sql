@@ -51,9 +51,8 @@ SELECT
     ingested_at,
     now() AS olap_loaded_at
 FROM deltaLake(
-    'http://minio:9000/logistics-lakehouse/gold/datamart/obt_shipment_analytics/',
-    'minioadmin',
-    'minioadmin'
+    minio_gold, 
+    url='http://minio-lakehouse:9000/logistics-lakehouse/gold/datamart/obt_shipment_analytics/'
 )
 
 {% if is_incremental() %}

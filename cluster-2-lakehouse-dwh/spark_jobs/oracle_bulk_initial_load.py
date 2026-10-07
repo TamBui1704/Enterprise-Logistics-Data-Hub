@@ -11,7 +11,7 @@ from pyspark.sql.functions import current_timestamp, lit
 import time
 
 def build_spark_session():
-    minio_endpoint = os.getenv("MINIO_ENDPOINT", "http://localhost:9000")
+    minio_endpoint = os.getenv("MINIO_ENDPOINT", "http://minio-lakehouse:9000")
     return SparkSession.builder \
         .appName("EMS-Logistics-Oracle-Initial-Bulk-Load-to-Silver") \
         .config("spark.jars.packages", 
@@ -25,6 +25,7 @@ def build_spark_session():
         .config("spark.hadoop.fs.s3a.secret.key", "minioadminpassword") \
         .config("spark.hadoop.fs.s3a.path.style.access", "true") \
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
+        .config("spark.hadoop.fs.s3a.aws.credentials.provider", "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider") \
         .getOrCreate()
 
 def main():
@@ -34,11 +35,12 @@ def main():
     spark.sparkContext.setLogLevel("WARN")
 
     # Cấu hình JDBC Oracle DB
-    jdbc_url = os.getenv("ORACLE_JDBC_URL", "jdbc:oracle:thin:@localhost:1521/ORCLPDB1")
+    jdbc_url = os.getenv("ORACLE_JDBC_URL", "jdbc:oracle:thin:@source_oracle_db:1521/FREEPDB1")
     connection_properties = {
         "user": "debezium",
         "password": "dbz",
-        "driver": "oracle.jdbc.OracleDriver"
+        "driver": "oracle.jdbc.OracleDriver",
+        "fetchsize": "20000"
     }
 
     tables_to_load = [

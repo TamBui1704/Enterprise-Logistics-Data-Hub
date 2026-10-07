@@ -14,8 +14,8 @@ Tài liệu hướng dẫn chi tiết quy trình khởi chạy và kiểm thử 
 | **Kafka UI** | `kafka_ui` | `8080` | Giao diện Web xem Topics & CDC Messages (`http://localhost:8080`) |
 | **MinIO Storage** | `minio_lakehouse` | `9000`, `9001` | S3 Object Storage Console (`http://localhost:9001`) |
 | **ClickHouse DWH** | `clickhouse_dwh` | `8123`, `9009` | Serving Data Warehouse OLAP (Default user: `default`, pass: rỗng) |
-| **PySpark Master** | `spark_runner` | `8081`, `7077` | Spark Master Web UI (`http://localhost:8081`) |
-| **PySpark Worker** | `spark_worker` | - | Spark Worker Node (Connected to Master `spark_runner:7077`) |
+| **PySpark Master** | `spark-runner` | `8081`, `7077` | Spark Master Web UI (`http://localhost:8081`) |
+| **PySpark Worker** | `spark-worker` | - | Spark Worker Node (Connected to Master `spark-runner:7077`) |
 
 ---
 
@@ -38,10 +38,29 @@ ORACLE DB ──► DEBEZIUM CDC ──► KAFKA ──► BRONZE LAYER (Append-
 
 ## 🏭 3. QUY TRÌNH KIỂM THỬ THÔNG LUỒNG CHI TIẾT TỪNG BƯỚC (STEP-BY-STEP)
 
-> 💡 **Ghi chú về Môi trường Python (khi chọn chạy trực tiếp trên máy Local)**:
-> * **Với Cluster 1 scripts**: Cài đặt thư viện bằng `pip install -r cluster-1-ingestion/requirements.txt` (cần gói `oracledb`).
-> * **Với Cluster 2 scripts**: Cài đặt thư viện bằng `pip install -r cluster-2-lakehouse-dwh/requirements.txt` (cần `pyspark`, `delta-spark`, `oracledb`).
-> * *(Nếu bạn chạy trong Container `spark_runner` thì không cần cài pip trên máy local).*
+### 💡 Hướng Dẫn Thiết Lập Môi Trường Python Ảo (venv) Trên Máy Local
+
+Nếu bạn muốn chạy các script `.py` (như script sinh dữ liệu) trực tiếp trên máy thay vì vào trong container, hãy thiết lập `venv` theo các bước sau (đảm bảo Docker đã chạy để kết nối qua port mapping):
+
+```bash
+# 1. Đứng tại thư mục gốc của dự án
+cd ~/Projects/Enterprise-Logistics-Data-Hub
+
+# 2. Tạo môi trường ảo có tên là "venv"
+python3 -m venv venv
+
+# 3. Kích hoạt venv (Linux/macOS)
+source venv/bin/activate
+# (Nếu dùng Windows PowerShell thì chạy: .\venv\Scripts\Activate.ps1)
+
+# 4. Cài đặt thư viện
+# - Cho các script sinh dữ liệu (Cluster 1):
+pip install oracledb
+
+# - Cho các script xử lý PySpark (Cluster 2):
+pip install -r cluster-2-lakehouse-dwh/requirements.txt
+```
+
 
 ---
 
@@ -49,7 +68,7 @@ ORACLE DB ──► DEBEZIUM CDC ──► KAFKA ──► BRONZE LAYER (Append-
 
 Mở PowerShell / Terminal tại máy của bạn:
 
-```powershell
+```bash
 # 1. Khởi chạy Cluster 1 (Oracle DB, Kafka, Debezium, Kafka UI)
 cd cluster-1-ingestion
 docker compose up -d
@@ -60,26 +79,98 @@ docker compose up -d
 ```
 
 > 🔍 **Kiểm tra trạng thái**: Gõ `docker ps`. Tất cả 8 container phải ở trạng thái `Up` (hoặc `healthy`).
-> Kiểm tra Spark Master Web UI tại `http://localhost:8081` phải hiển thị **Alive Workers: 1** (`spark_worker`).
+> Kiểm tra Spark Master Web UI tại `http://localhost:8081` phải hiển thị **Alive Workers: 1** (`spark-worker`).
 
 ---
 
+### BƯỚC 1.5: Sinh Dữ Liệu Mẫu Về Oracle (Chạy 1 lần)
+
+Trước khi thực hiện Initial Load hay CDC, bạn cần bơm dữ liệu mẫu vào cơ sở dữ liệu Oracle vừa khởi động:
+
+```bash
+# Đảm bảo venv đang được kích hoạt (như đã hướng dẫn ở phần trên)
+# Đứng từ thư mục gốc của dự án:
+cd ~/Projects/Enterprise-Logistics-Data-Hub
+
+# Chạy script Python để sinh dữ liệu:
+# (Mẹo: Mặc định sẽ tạo 10 triệu bản ghi mất khoảng 1-2 tiếng. Để test nhanh luồng, hãy thêm tham số --records 500000 để tạo 500 ngàn bản ghi trong ~3 phút)
+python cluster-1-ingestion/scripts/generate_bulk_10m_data.py --records 500000
+```
+
+---
+
+### BƯỚC 1.6: Tạo Bucket trên MinIO
+Trước khi Spark có thể ghi dữ liệu, bạn cần tạo một kho chứa (bucket) trên MinIO.
+
+**Cách 1: Dùng Giao diện Web (UI)**
+1. Mở trình duyệt và truy cập vào [http://localhost:9001](http://localhost:9001)
+2. Đăng nhập với Username: `minioadmin` và Password: `minioadminpassword`
+3. Ở menu bên trái, chọn **Buckets** -> Nhấn **Create Bucket**
+4. Nhập tên bucket là `logistics-lakehouse` và nhấn **Create Bucket**.
+
+**Cách 2: Dùng lệnh Terminal (CLI - Thường được dùng ở các công ty lớn)**
+Bạn có thể dùng công cụ `mc` (MinIO Client) để tạo bucket trực tiếp bên trong container:
+```bash
+docker exec minio_lakehouse mc alias set myminio http://localhost:9000 minioadmin minioadminpassword
+docker exec minio_lakehouse mc mb myminio/logistics-lakehouse
+```
+
 ### BƯỚC 2: PySpark Initial Bulk Load Bảng Lớn Từ Oracle Vào Silver Layer
 
-Nạp dữ liệu ban đầu từ Oracle DB sang MinIO S3 Silver Layer:
+Nạp dữ liệu ban đầu từ Oracle DB sang MinIO S3 Silver Layer bằng cách Submit Job lên cụm Spark Standalone Cluster (Dành cho Production / Airflow):
 
-#### 🔹 Cách A: Chạy trực tiếp trên máy Local (Dành cho Dev / Test nhanh - Mode Local)
-```powershell
-cd cluster-2-lakehouse-dwh
-pip install -r requirements.txt
-python spark_jobs/oracle_bulk_initial_load.py
+```bash
+docker exec -it spark-runner spark-submit \
+  --master spark://spark-runner:7077 \
+  --executor-memory 2G \
+  --executor-cores 2 \
+  /opt/bitnami/spark/spark_jobs/oracle_bulk_initial_load.py
+```
+> 💡 *Truyền cờ `--master spark://spark-runner:7077` giúp Spark Master (`spark-runner`) ghi nhận job lên Web UI (`http://localhost:8081`) và điều phối cho Spark Worker (`spark-worker`) thực thi. Cờ `--executor-memory` và `--executor-cores` giúp tận dụng tối đa tài nguyên để tăng tốc.*
+
+### BƯỚC 2.1: Kiểm Tra Dữ Liệu Bằng ClickHouse (DBeaver)
+Bạn đã nạp xong dữ liệu thô vào tầng Silver (MinIO). Nhờ kiến trúc Lakehouse, ClickHouse có thể "đọc xuyên thấu" (Zero-copy) dữ liệu định dạng Delta Lake nằm trên MinIO mà không cần copy dữ liệu sang ổ cứng của ClickHouse!
+
+**Thực hành Query trực tiếp bằng DBeaver:**
+1. Mở DBeaver, kết nối vào ClickHouse (Port `8123`, User `default`, không pass).
+2. Mở cửa sổ gõ SQL (SQL Editor) và chạy lệnh sau để đọc bảng `shipment_bookings` từ tầng Silver:
+
+```sql
+-- Đỉnh cao của Production: Không cần lộ mật khẩu!
+-- Dùng Named Collection (minio_silver) đã được cấu hình sẵn trong ruột ClickHouse:
+SELECT * 
+FROM deltaLake(
+    minio_silver, 
+    url='http://minio-lakehouse:9000/logistics-lakehouse/silver/value_shipment_bookings/'
+)
+LIMIT 10;
 ```
 
-#### 🔹 Cách B: Submit Job lên cụm Spark Standalone Cluster (Dành cho Production / Airflow)
-```powershell
-docker exec -it spark_runner spark-submit --master spark://spark_runner:7077 /opt/bitnami/spark/spark_jobs/oracle_bulk_initial_load.py
+*(Lưu ý: ClickHouse sẽ tải dữ liệu cực nhanh. Hàm `deltaLake` sẽ tự động đọc thư mục `_delta_log` để biết file Parquet nào là mới nhất).*
+
+**Thực hành Query nhanh bằng Terminal (clickhouse-client):**
+Nếu bạn đang ở màn hình Terminal và lười mở DBeaver, bạn có thể gọi thẳng client của ClickHouse để đếm số dòng:
+```bash
+docker exec -it clickhouse_dwh clickhouse-client -q "SELECT count() FROM deltaLake(minio_silver, url='http://minio-lakehouse:9000/logistics-lakehouse/silver/value_shipment_bookings/')"
 ```
-> 💡 *Truyền cờ `--master spark://spark_runner:7077` giúp Spark Master (`spark_runner`) ghi nhận job lên Web UI (`http://localhost:8081`) và điều phối cho Spark Worker (`spark_worker`) thực thi.*
+
+---
+
+### BƯỚC 2.2: Kiểm Tra Dữ Liệu Sau Khi Bulk Load (Bằng Spark)
+Sau khi Spark chạy xong, bạn cần xác nhận dữ liệu đã được ghi đúng định dạng Delta Lake xuống MinIO.
+
+**Cách 1: Kiểm tra cấu trúc thư mục bằng MinIO Client (CLI)**
+Mở Terminal và gõ lệnh sau để xem dữ liệu đã được ghi vào đúng các thư mục `silver/value_...` và `silver/history_...` chưa:
+```bash
+docker exec minio_lakehouse mc ls myminio/logistics-lakehouse/silver/
+```
+
+**Cách 2: Đọc trực tiếp dữ liệu từ MinIO bằng Spark (Khuyên dùng)**
+Do việc mở PySpark Shell cần phải truyền tay rất nhiều cấu hình (S3, Delta Lake), tôi đã chuẩn bị sẵn một script nhỏ để bạn kiểm tra cho lẹ.
+Chỉ cần chạy lệnh sau:
+```bash
+docker exec -it spark-runner spark-submit /opt/bitnami/spark/spark_jobs/check_silver_data.py
+```
 
 ---
 
@@ -87,18 +178,18 @@ docker exec -it spark_runner spark-submit --master spark://spark_runner:7077 /op
 
 Chuyển sang thư mục `cluster-1-ingestion` để gửi REST API tới Debezium Connect:
 
-```powershell
+```bash
 cd cluster-1-ingestion
 
 # 1. Đăng ký Connector Bảng Nhỏ (Snapshot Full + Incremental)
-Invoke-RestMethod -Uri "http://localhost:8083/connectors" -Method Post -ContentType "application/json" -InFile "debezium/register-dim-connector.json"
+curl -X POST http://localhost:8083/connectors -H "Content-Type: application/json" -d @debezium/register-dim-connector.json
 
 # 2. Đăng ký Connector Bảng Lớn (Schema Only - Incremental Only)
-Invoke-RestMethod -Uri "http://localhost:8083/connectors" -Method Post -ContentType "application/json" -InFile "debezium/register-fact-connector.json"
+curl -X POST http://localhost:8083/connectors -H "Content-Type: application/json" -d @debezium/register-fact-connector.json
 ```
 
 > 🔍 **Kiểm tra trạng thái**: Mở trình duyệt xem Kafka UI tại `http://localhost:8080` hoặc gõ:
-> `Invoke-RestMethod -Uri "http://localhost:8083/connectors/oracle-logistics-fact-connector/status"`
+> `curl -X GET http://localhost:8083/connectors/oracle-logistics-fact-connector/status`
 
 ---
 
@@ -107,7 +198,7 @@ Invoke-RestMethod -Uri "http://localhost:8083/connectors" -Method Post -ContentT
 Mở một cửa sổ Terminal mới để chạy script phát sinh đơn hàng EMS giao dịch realtime:
 
 #### 🔹 Cách A: Chạy trực tiếp trên máy Local
-```powershell
+```bash
 cd cluster-1-ingestion
 pip install -r requirements.txt
 python scripts/seed_realtime_events.py
@@ -121,15 +212,15 @@ python scripts/seed_realtime_events.py
 Mở một cửa sổ Terminal khác để chạy PySpark Streaming job tiếp nhận dữ liệu CDC từ Kafka ghi vào Bronze Layer:
 
 #### 🔹 Cách A: Chạy trực tiếp trên máy Local
-```powershell
+```bash
 cd cluster-2-lakehouse-dwh
 pip install -r requirements.txt
 python spark_jobs/kafka_to_delta.py
 ```
 
 #### 🔹 Cách B: Submit Job lên cụm Spark Standalone Cluster
-```powershell
-docker exec -it spark_runner spark-submit --master spark://spark_runner:7077 /opt/bitnami/spark/spark_jobs/kafka_to_delta.py
+```bash
+docker exec -it spark-runner spark-submit --master spark://spark-runner:7077 /opt/bitnami/spark/spark_jobs/kafka_to_delta.py
 ```
 
 ---
@@ -139,15 +230,15 @@ docker exec -it spark_runner spark-submit --master spark://spark_runner:7077 /op
 Sau khi dữ liệu thô CDC đã tích tụ tại Bronze Layer, chạy script chuyển đổi Medallion để thực hiện `MERGE INTO` (Upsert / Delete / SCD Type 2):
 
 #### 🔹 Cách A: Chạy trực tiếp trên máy Local
-```powershell
+```bash
 cd cluster-2-lakehouse-dwh
 pip install -r requirements.txt
 python spark_jobs/bronze_to_silver_medallion.py
 ```
 
 #### 🔹 Cách B: Submit Job lên cụm Spark Standalone Cluster
-```powershell
-docker exec -it spark_runner spark-submit --master spark://spark_runner:7077 /opt/bitnami/spark/spark_jobs/bronze_to_silver_medallion.py
+```bash
+docker exec -it spark-runner spark-submit --master spark://spark-runner:7077 /opt/bitnami/spark/spark_jobs/bronze_to_silver_medallion.py
 ```
 
 ---
@@ -155,7 +246,7 @@ docker exec -it spark_runner spark-submit --master spark://spark_runner:7077 /op
 ### BƯỚC 7: Khởi Động Cluster 3 & Thực Thi dbt Transformations (dbt-clickhouse & Airflow)
 
 #### 1. Khởi động Container Airflow + dbt-clickhouse (Cluster 3)
-```powershell
+```bash
 cd cluster-3-dbt-airflow
 docker compose up -d --build
 ```
@@ -168,7 +259,7 @@ Quá trình biến đổi dbt được chia thành **2 project riêng biệt**:
 * **`dbt_lakehouse_spark` (Chạy trên cụm Spark)**: Đọc dữ liệu Silver từ MinIO nạp thành các bảng Star Schema và tạo sẵn bảng OBT trên Delta Lake S3.
 * **`dbt_warehouse_clickhouse` (Chạy trên ClickHouse)**: Đọc file OBT Delta từ S3 nạp vào ClickHouse dưới dạng `ReplacingMergeTree` (bảng `obt_shipment_analytics_base`) và tạo Wrapper View `obt_shipment_analytics` siêu tối ưu và chống duplicate cho BI (Superset / Metabase).
 
-```powershell
+```bash
 # 1. Run dbt Spark (Biến đổi S3 Silver -> S3 Gold Delta Lake)
 docker exec -it airflow_orchestrator dbt run --project-dir /opt/airflow/dbt_lakehouse_spark --profiles-dir /opt/airflow/dbt_lakehouse_spark
 
@@ -239,7 +330,7 @@ ORDER BY REVENUE_VND DESC;
 ```
 
 #### 🔹 Phương án B: Kết nối trực tiếp bằng CLI trong Container
-```powershell
+```bash
 # Vô giao diện dòng lệnh ClickHouse Client
 docker exec -it clickhouse_dwh clickhouse-client
 
@@ -249,7 +340,7 @@ SELECT count() FROM default.obt_shipment_analytics;
 ```
 
 #### 🔹 Phương án C: Kiểm tra nhanh qua cURL (Terminal / PowerShell)
-```powershell
+```bash
 curl "http://localhost:8123/?query=SELECT+count()+FROM+default.obt_shipment_analytics"
 ```
 
@@ -257,15 +348,26 @@ curl "http://localhost:8123/?query=SELECT+count()+FROM+default.obt_shipment_anal
 
 ## 📌 5. BỘ LỆNH QUẢN LÝ DEBEZIUM API THƯỜNG DÙNG
 
-```powershell
+```bash
 # 1. Xem danh sách tất cả Connector đang chạy
-Invoke-RestMethod -Uri "http://localhost:8083/connectors"
+curl -X GET http://localhost:8083/connectors
 
 # 2. Kiểm tra chi tiết trạng thái Fact Connector
-Invoke-RestMethod -Uri "http://localhost:8083/connectors/oracle-logistics-fact-connector/status"
+curl -X GET http://localhost:8083/connectors/oracle-logistics-fact-connector/status
 
 # 3. Xóa Connector (khi cần làm lại snapshot)
-Invoke-RestMethod -Uri "http://localhost:8083/connectors/oracle-logistics-fact-connector" -Method Delete
+curl -X DELETE http://localhost:8083/connectors/oracle-logistics-fact-connector
 ```
 
 
+
+### 3. Kiểm tra dữ liệu gốc trên Oracle DB bằng DBeaver
+Bạn có thể kết nối công cụ DBeaver vào Oracle đang chạy trong Docker bằng thông số sau:
+- **Host**: `localhost`
+- **Port**: `1521`
+- **Database/Service Name**: `FREEPDB1`
+- **Username**: `c##dbzuser` (hoặc dùng tài khoản quản trị `sys`)
+- **Password**: `dbz` (hoặc `top_secret` nếu đăng nhập bằng `sys`)
+- **Role** (nếu dùng `sys`): chọn `SYSDBA`
+
+> **Lưu ý**: Hãy tải driver **Oracle (ojdbc8)** trong DBeaver nếu phần mềm yêu cầu.
