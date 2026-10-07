@@ -72,6 +72,27 @@ services:
       - logistics_net
 
   # -------------------------------------------------------------------
+  # 2.1 Tự động tạo sẵn CDC Fact Topics (Đảm bảo Spark Streaming không lỗi)
+  # -------------------------------------------------------------------
+  kafka-init-topics:
+    image: apache/kafka:3.7.0
+    container_name: kafka_init_topics
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: [ "/bin/sh", "-c" ]
+    command: |
+      "
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists --topic cdc_logistics_oracle.DEBEZIUM.SHIPMENT_BOOKINGS --partitions 3 --replication-factor 1
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists --topic cdc_logistics_oracle.DEBEZIUM.SHIPMENT_EVENT_TRACKINGS --partitions 3 --replication-factor 1
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists --topic cdc_logistics_oracle.DEBEZIUM.DELIVERY_REMUNERATIONS --partitions 3 --replication-factor 1
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists --topic cdc_logistics_oracle.DEBEZIUM.RETURN_REMUNERATIONS --partitions 3 --replication-factor 1
+      echo 'CDC Fact Topics ready!'
+      "
+    networks:
+      - logistics_net
+
+  # -------------------------------------------------------------------
   # 3. Debezium CDC Connector
   # -------------------------------------------------------------------
   debezium:
@@ -118,10 +139,11 @@ services:
     environment:
       KAFKA_CLUSTERS_0_NAME: local-logistics-cluster
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      JAVA_OPTS: "-Xmx384m -Xms128m"
     deploy:
       resources:
         limits:
-          memory: 256M
+          memory: 512M
     depends_on:
       - kafka
     networks:
@@ -132,7 +154,6 @@ networks:
     name: logistics_net
 
 volumes:
-  oracle_data:
   oracle_data_23c:
   kafka_data:
 

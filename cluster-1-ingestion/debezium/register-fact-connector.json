@@ -15,7 +15,9 @@
     "table.include.list": "DEBEZIUM.SHIPMENT_BOOKINGS,DEBEZIUM.DELIVERY_REMUNERATIONS,DEBEZIUM.RETURN_REMUNERATIONS,DEBEZIUM.SHIPMENT_EVENT_TRACKINGS",
     "database.connection.adapter": "logminer",
     "snapshot.mode": "schema_only",
+    "decimal.handling.mode": "double",
     "signal.data.collection": "DEBEZIUM.DEBEZIUM_SIGNAL",
-    "tombstones.on.delete": "false"
+    "tombstones.on.delete": "false",
+    "name": "oracle-logistics-fact-connector"
   }
 }

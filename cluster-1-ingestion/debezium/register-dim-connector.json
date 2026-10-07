@@ -15,8 +15,9 @@
     "table.include.list": "DEBEZIUM.DIM_CUSTOMERS,DEBEZIUM.DIM_SERVICES,DEBEZIUM.DIM_POS_LOCATIONS,DEBEZIUM.DIM_WEIGHT_TIERS,DEBEZIUM.DIM_ROUTING_TYPES,DEBEZIUM.DIM_DELIVERY_STATUSES,DEBEZIUM.DIM_FAILURE_REASONS",
     "database.connection.adapter": "logminer",
     "snapshot.mode": "initial",
+    "decimal.handling.mode": "double",
     "signal.data.collection": "DEBEZIUM.DEBEZIUM_SIGNAL",
     "tombstones.on.delete": "false",
-    "database.url": "jdbc:oracle:thin:@//oracle-db:1521/FREE"
+    "name": "oracle-logistics-dim-connector"
   }
 }

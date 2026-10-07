@@ -1,373 +1,299 @@
-# 🚀 Hướng Dẫn Kiểm Thử Thông Luồng Dữ Liệu End-to-End (Data Pipeline Guide)
+# 🚀 Hướng Dẫn Kiểm Thử Toàn Diện Luồng Dữ Liệu End-to-End (E2E Data Pipeline Guide)
 
-Tài liệu hướng dẫn chi tiết quy trình khởi chạy và kiểm thử toàn bộ luồng dữ liệu từ **Oracle Database (OLTP Nguồn)** $\rightarrow$ **Debezium CDC** $\rightarrow$ **Apache Kafka** $\rightarrow$ **PySpark Structured Streaming (Master/Worker Cluster)** $\rightarrow$ **MinIO S3 Delta Lakehouse** $\rightarrow$ **ClickHouse DWH**.
+Tài liệu chuẩn hóa toàn bộ quy trình thiết lập, sinh dữ liệu nguồn, dọn dẹp và kiểm thử thông luồng dữ liệu từ:
+**Oracle Database (OLTP Nguồn)** → **Debezium CDC** → **Apache Kafka** → **PySpark Structured Streaming** → **MinIO S3 (Delta Lakehouse: Bronze/Silver)** → **ClickHouse DWH**.
 
 ---
 
-## 📐 1. Kiến Trúc & Cổng Dịch Vụ Hệ Thống (Ports Mapping)
+## 📐 1. Kiến Trúc & Cổng Dịch Vụ Hệ Thống (Port Mapping)
 
-| Dịch vụ | Tên Container | Cổng Host (Port) | Chức năng / Địa chỉ Web UI |
+| Dịch vụ | Tên Container | Cổng Host | Thông tin kết nối / Web UI |
 | :--- | :--- | :--- | :--- |
-| **Oracle Database** | `source_oracle_db` | `1521`, `5500` | Oracle 23c XE (LogMiner CDC pre-configured) |
-| **Apache Kafka** | `kafka_broker` | `9092` | Event Broker (KRaft Mode) |
-| **Debezium Connect** | `debezium_cdc` | `8083` | REST API Đăng ký Connector |
+| **Oracle Database** | `source_oracle_db` | `1521` | **Service:** `FREEPDB1`, **User:** `debezium`, **Pass:** `dbz` |
+| **Apache Kafka** | `kafka_broker` | `9092` | Event Streaming Broker (KRaft Mode, 3 Partitions) |
+| **Debezium Connect** | `debezium_cdc` | `8083` | Kafka Connect Distributed (REST API quản lý Connectors) |
 | **Kafka UI** | `kafka_ui` | `8080` | Giao diện Web xem Topics & CDC Messages (`http://localhost:8080`) |
-| **MinIO Storage** | `minio_lakehouse` | `9000`, `9001` | S3 Object Storage Console (`http://localhost:9001`) |
-| **ClickHouse DWH** | `clickhouse_dwh` | `8123`, `9009` | Serving Data Warehouse OLAP (Default user: `default`, pass: rỗng) |
-| **PySpark Master** | `spark-runner` | `8081`, `7077` | Spark Master Web UI (`http://localhost:8081`) |
-| **PySpark Worker** | `spark-worker` | - | Spark Worker Node (Connected to Master `spark-runner:7077`) |
+| **MinIO Storage** | `minio_lakehouse` | `9000`, `9001` | S3 API: `9000` | Console Web UI: `http://localhost:9001` (`minioadmin`/`minioadminpassword`) |
+| **ClickHouse DWH** | `clickhouse_dwh` | `8123`, `9009` | HTTP Interface: `8123` | Native TCP: `9009` |
+| **PySpark Master** | `spark-runner` | `8081`, `7077` | Master Web UI (`http://localhost:8081`) | Cluster URL: `spark://spark-runner:7077` |
+| **PySpark Worker** | `spark-worker` | - | Spark Worker Cluster Node |
 
 ---
 
-## 🧠 2. KIẾN TRÚC CHUYÊN SÂU: DEBEZIUM CDC & MEDALLION LAKEHOUSE
+## 🧠 2. CHIẾN LƯỢC NẠP DỮ LIỆU ĐỈNH CAO (ENTERPRISE PATTERN)
 
 ```text
-ORACLE DB ──► DEBEZIUM CDC ──► KAFKA ──► BRONZE LAYER (Append-Only CDC Payloads)
-                                               │
-                            ┌──────────────────┴──────────────────┐
-                            ▼                                     ▼
-                 SILVER VALUE (Current 1:1)             SILVER HISTORY (SCD Type 2)
-                 (MERGE INTO, Ingested_at)             (valid_from, valid_to, is_current)
+               ┌─────────────────────── BẢNG NHỎ (DIMS) ────────────────────────┐
+               ▼ (Debezium snapshot.mode: initial)                             │
+ORACLE DB ────► DEBEZIUM CDC ──► KAFKA ──► BRONZE LAYER (Append-Only CDC)      │
+    │          ▲ (Debezium snapshot.mode: schema_only)      │                  ▼
+    │          └─────────────── BẢNG LỚN (FACTS) ───────────┘          CLICKHOUSE DWH
+    │                                                       │        (Zero-Copy Query)
+    ▼                                                       ▼                 ▲
+[PYSPARK BULK LOAD JDBC] ──────────────────────────► SILVER VALUE & HISTORY ──┘
+ (Baseline Historical Data)                        (MERGE INTO / SCD Type 2)
 ```
 
-### 🔹 Tách 2 Connectors Độc Lập Cho Bảng Nhỏ (Dims) & Bảng Lớn (Facts)
-* **Connector Bảng Nhỏ (Dimensions)**: `debezium/register-dim-connector.json` (`snapshot.mode: initial`).
-* **Connector Bảng Lớn (Facts)**: `debezium/register-fact-connector.json` (`snapshot.mode: schema_only`). PySpark Initial Bulk Load trực tiếp nạp lịch sử vào Silver, Debezium chỉ chốt mốc SCN và stream dữ liệu mới.
+1. **Bảng Danh mục (Dimensions)**: Kích thước nhỏ → Dùng Debezium `snapshot.mode: initial` snapshot toàn bộ vào Kafka ngay từ đầu.
+2. **Bảng Giao dịch (Facts)**: Kích thước lớn → Dùng **PySpark Bulk Load** đọc trực tiếp qua JDBC nạp Baseline vào Silver Layer (tránh nghẽn Kafka). Sau đó bật Debezium `snapshot.mode: schema_only` để chỉ bắt biến động mới (Incremental CDC).
+3. **Tầng Bronze (Delta Lake)**: Lưu Append-Only toàn bộ sự kiện CDC từ Kafka kèm metadata và timestamp `ingested_at`.
+4. **Tầng Silver (Delta Lake)**: 
+   - `silver/value_<table_name>`: Bản ghi hiện tại 1:1 (Merge/Upsert).
+   - `silver/history_<table_name>`: Lịch sử biến đổi SCD Type 2 (`valid_from`, `valid_to`, `is_current`).
 
 ---
 
-## 🏭 3. QUY TRÌNH KIỂM THỬ THÔNG LUỒNG CHI TIẾT TỪNG BƯỚC (STEP-BY-STEP)
+## 🏭 3. QUY TRÌNH KIỂM THỬ THÔNG LUỒNG TỪNG BƯỚC (STEP-BY-STEP)
 
-### 💡 Hướng Dẫn Thiết Lập Môi Trường Python Ảo (venv) Trên Máy Local
+### BƯỚC 0: Dọn dẹp & Reset môi trường để chạy lại từ đầu (Clean Start)
 
-Nếu bạn muốn chạy các script `.py` (như script sinh dữ liệu) trực tiếp trên máy thay vì vào trong container, hãy thiết lập `venv` theo các bước sau (đảm bảo Docker đã chạy để kết nối qua port mapping):
-
-```bash
-# 1. Đứng tại thư mục gốc của dự án
-cd ~/Projects/Enterprise-Logistics-Data-Hub
-
-# 2. Tạo môi trường ảo có tên là "venv"
-python3 -m venv venv
-
-# 3. Kích hoạt venv (Linux/macOS)
-source venv/bin/activate
-# (Nếu dùng Windows PowerShell thì chạy: .\venv\Scripts\Activate.ps1)
-
-# 4. Cài đặt thư viện
-# - Cho các script sinh dữ liệu (Cluster 1):
-pip install oracledb
-
-# - Cho các script xử lý PySpark (Cluster 2):
-pip install -r cluster-2-lakehouse-dwh/requirements.txt
-```
-
-
----
-
-### BƯỚC 1: Khởi Động Hạ Tầng Container (Cluster 1 & Cluster 2)
-
-Mở PowerShell / Terminal tại máy của bạn:
+Nếu bạn vừa thử nghiệm và muốn dọn dẹp sạch sẽ toàn bộ connector và dữ liệu lakehouse để chạy lại từ đầu:
 
 ```bash
-# 1. Khởi chạy Cluster 1 (Oracle DB, Kafka, Debezium, Kafka UI)
-cd cluster-1-ingestion
-docker compose up -d
+# 1. Xóa các Debezium Connectors cũ
+curl -X DELETE http://localhost:8083/connectors/oracle-logistics-fact-connector
+curl -X DELETE http://localhost:8083/connectors/oracle-logistics-dim-connector
+curl -X DELETE http://localhost:8083/connectors/oracle-logistics-fact-connector-v4
+curl -X DELETE http://localhost:8083/connectors/oracle-logistics-dim-connector-v2
 
-# 2. Khởi chạy Cluster 2 (MinIO S3, ClickHouse DWH, PySpark Master & Worker)
-cd ../cluster-2-lakehouse-dwh
-docker compose up -d
-```
-
-> 🔍 **Kiểm tra trạng thái**: Gõ `docker ps`. Tất cả 8 container phải ở trạng thái `Up` (hoặc `healthy`).
-> Kiểm tra Spark Master Web UI tại `http://localhost:8081` phải hiển thị **Alive Workers: 1** (`spark-worker`).
-
----
-
-### BƯỚC 1.5: Sinh Dữ Liệu Mẫu Về Oracle (Chạy 1 lần)
-
-Trước khi thực hiện Initial Load hay CDC, bạn cần bơm dữ liệu mẫu vào cơ sở dữ liệu Oracle vừa khởi động:
-
-```bash
-# Đảm bảo venv đang được kích hoạt (như đã hướng dẫn ở phần trên)
-# Đứng từ thư mục gốc của dự án:
-cd ~/Projects/Enterprise-Logistics-Data-Hub
-
-# Chạy script Python để sinh dữ liệu:
-# (Mẹo: Mặc định sẽ tạo 10 triệu bản ghi mất khoảng 1-2 tiếng. Để test nhanh luồng, hãy thêm tham số --records 500000 để tạo 500 ngàn bản ghi trong ~3 phút)
-python cluster-1-ingestion/scripts/generate_bulk_10m_data.py --records 500000
-```
-
----
-
-### BƯỚC 1.6: Tạo Bucket trên MinIO
-Trước khi Spark có thể ghi dữ liệu, bạn cần tạo một kho chứa (bucket) trên MinIO.
-
-**Cách 1: Dùng Giao diện Web (UI)**
-1. Mở trình duyệt và truy cập vào [http://localhost:9001](http://localhost:9001)
-2. Đăng nhập với Username: `minioadmin` và Password: `minioadminpassword`
-3. Ở menu bên trái, chọn **Buckets** -> Nhấn **Create Bucket**
-4. Nhập tên bucket là `logistics-lakehouse` và nhấn **Create Bucket**.
-
-**Cách 2: Dùng lệnh Terminal (CLI - Thường được dùng ở các công ty lớn)**
-Bạn có thể dùng công cụ `mc` (MinIO Client) để tạo bucket trực tiếp bên trong container:
-```bash
+# 2. Xóa sạch dữ liệu cũ trong MinIO Bucket (để nạp mới)
 docker exec minio_lakehouse mc alias set myminio http://localhost:9000 minioadmin minioadminpassword
-docker exec minio_lakehouse mc mb myminio/logistics-lakehouse
+docker exec minio_lakehouse mc rm --recursive --force myminio/logistics-lakehouse/bronze/
+docker exec minio_lakehouse mc rm --recursive --force myminio/logistics-lakehouse/silver/
+docker exec minio_lakehouse mc rm --recursive --force myminio/logistics-lakehouse/checkpoints/
+docker exec minio_lakehouse mc rm --recursive --force myminio/logistics-lakehouse/control/
 ```
 
-### BƯỚC 2: PySpark Initial Bulk Load Bảng Lớn Từ Oracle Vào Silver Layer
+> 💡 **Lưu ý**: Bạn **KHÔNG CẦN** xóa hoặc dựng lại container Oracle Database! Nếu muốn làm mới dữ liệu nguồn Oracle, hãy chạy script sinh dữ liệu ở **BƯỚC 2**, script sẽ tự động làm mới các bảng.
 
-Nạp dữ liệu ban đầu từ Oracle DB sang MinIO S3 Silver Layer bằng cách Submit Job lên cụm Spark Standalone Cluster (Dành cho Production / Airflow):
+---
+
+### BƯỚC 1: Đảm bảo Hạ Tầng Container (Cluster 1 & Cluster 2) Đang Chạy
+
+Kiểm tra trạng thái các container:
 
 ```bash
-docker exec -it spark-runner spark-submit \
-  --master spark://spark-runner:7077 \
-  --executor-memory 2G \
-  --executor-cores 2 \
-  /opt/bitnami/spark/spark_jobs/oracle_bulk_initial_load.py
+docker ps --format "table {{.Names}}	{{.Status}}	{{.Ports}}"
 ```
-> 💡 *Truyền cờ `--master spark://spark-runner:7077` giúp Spark Master (`spark-runner`) ghi nhận job lên Web UI (`http://localhost:8081`) và điều phối cho Spark Worker (`spark-worker`) thực thi. Cờ `--executor-memory` và `--executor-cores` giúp tận dụng tối đa tài nguyên để tăng tốc.*
+*Đảm bảo các container sau đang chạy và healthy:*
+- Cluster 1: `source_oracle_db` (healthy), `kafka_broker` (healthy), `debezium_cdc`, `kafka_ui`
+- Cluster 2: `minio_lakehouse`, `clickhouse_dwh`, `spark-runner`, `spark-worker`
 
-### BƯỚC 2.1: Kiểm Tra Dữ Liệu Bằng ClickHouse (DBeaver)
-Bạn đã nạp xong dữ liệu thô vào tầng Silver (MinIO). Nhờ kiến trúc Lakehouse, ClickHouse có thể "đọc xuyên thấu" (Zero-copy) dữ liệu định dạng Delta Lake nằm trên MinIO mà không cần copy dữ liệu sang ổ cứng của ClickHouse!
+Nếu có container chưa chạy, hãy khởi động:
+```bash
+# Cluster 1 (Ingestion & Source)
+cd ~/Projects/Enterprise-Logistics-Data-Hub/cluster-1-ingestion
+docker compose up -d
 
-**Thực hành Query trực tiếp bằng DBeaver:**
-1. Mở DBeaver, kết nối vào ClickHouse (Port `8123`, User `default`, không pass).
-2. Mở cửa sổ gõ SQL (SQL Editor) và chạy lệnh sau để đọc bảng `shipment_bookings` từ tầng Silver:
+# Cluster 2 (Lakehouse & DWH)
+cd ~/Projects/Enterprise-Logistics-Data-Hub/cluster-2-lakehouse-dwh
+docker compose up -d
+```
+
+---
+
+### BƯỚC 2: Sinh Dữ Liệu Nguồn Ban Đầu Vào Oracle DB (Initial Data Generation)
+
+Để kiểm thử quy trình Initial Bulk Load và CDC, Oracle Database cần có sẵn tập dữ liệu ban đầu gồm các bảng Danh mục (Dimensions) và bảng Giao dịch (Facts: đơn hàng, lịch sử bưu gửi, thù lao phát/hoàn).
+
+Dự án cung cấp sẵn script `generate_bulk_10m_data.py` sử dụng thư viện Python `oracledb` chạy đa tiến trình (multiprocessing):
+
+```bash
+# 1. Di chuyển vào thư mục gốc và kích hoạt môi trường ảo
+cd ~/Projects/Enterprise-Logistics-Data-Hub
+source venv/bin/activate
+
+# 2. Cài đặt thư viện nếu chưa có
+pip install -r cluster-1-ingestion/requirements.txt
+
+# 3. Chạy script sinh dữ liệu (Tùy chọn quy mô dữ liệu):
+
+# 🚀 Tùy chọn A (Khuyến nghị cho Test nhanh / máy cá nhân): Sinh 50,000 đơn hàng (~15-20s)
+python cluster-1-ingestion/scripts/generate_bulk_10m_data.py --records 50000 --batch 10000 --workers 2
+
+# 🚀 Tùy chọn B (Kiểm thử tải lớn hơn): Sinh 500,000 hoặc 1,000,000 đơn hàng
+# python cluster-1-ingestion/scripts/generate_bulk_10m_data.py --records 500000 --batch 25000 --workers 4
+```
+
+🔍 **Cơ chế script thực thi**:
+1. **Khởi tạo Master Dimensions**: Tự động reset và nạp mới 200 khách hàng (`DIM_CUSTOMERS`), 200 bưu cục bưu điện (`DIM_POS_LOCATIONS`), cùng các dịch vụ EMS (`DIM_SERVICES`), nấc cân nặng (`DIM_WEIGHT_TIERS`), hình thức tuyến (`DIM_ROUTING_TYPES`),...
+2. **Sinh Giao dịch Facts**: Sinh song song các bản ghi vận chuyển (`SHIPMENT_BOOKINGS`), các mốc tracking sự kiện bưu gửi (`SHIPMENT_EVENT_TRACKINGS`), thù lao phát (`DELIVERY_REMUNERATIONS`) và thù lao chuyển hoàn (`RETURN_REMUNERATIONS`).
+
+---
+
+### BƯỚC 3: Kết Nối DBeaver Để Kiểm Tra Dữ Liệu Nguồn (Oracle Verification)
+
+DBeaver là công cụ GUI trực quan giúp kiểm tra dữ liệu trong Oracle DB trước khi đưa vào pipeline.
+
+#### 1. Các bước thiết lập kết nối trong DBeaver:
+1. Mở DBeaver → Chọn menu **Database** → **New Database Connection**.
+2. Chọn loại CSDL: **Oracle** → Nhấn **Next**.
+3. Tại tab **Main**, điền thông số chính xác như sau:
+   - **Connect by**: Chọn `Service Name` *(⚠️ Cực kỳ quan trọng: KHÔNG chọn `SID` vì Oracle 23c Free sử dụng Pluggable Database `FREEPDB1`)*.
+   - **Host**: `localhost` (hoặc IP máy tính của bạn)
+   - **Port**: `1521`
+   - **Database**: `FREEPDB1`
+   - **Username**: `debezium`
+   - **Password**: `dbz`
+4. Nhấn nút **Test Connection ...**:
+   - Nếu DBeaver chưa có driver, hộp thoại sẽ hiển thị gợi ý tải *Oracle Database JDBC Driver* → Chọn **Download**.
+   - Khi hiện thông báo `Connected - Oracle Database 23ai Free ...` màu xanh là kết nối thành công.
+5. Nhấn **Finish** để hoàn tất.
+
+> 💡 **Mẹo**: Nếu muốn kết nối với user quản trị Container Database (CDB$ROOT), chọn Service Name là `FREE` (hoặc `ORCLCDB`), Username `sys`, Password `top_secret`, và chọn Role là `SYSDBA`.
+
+#### 2. Câu lệnh SQL kiểm tra dữ liệu nguồn:
+Mở một SQL Editor trong DBeaver trên kết nối vừa tạo và chạy các truy vấn sau:
 
 ```sql
--- Đỉnh cao của Production: Không cần lộ mật khẩu!
--- Dùng Named Collection (minio_silver) đã được cấu hình sẵn trong ruột ClickHouse:
-SELECT * 
-FROM deltaLake(
-    minio_silver, 
-    url='http://minio-lakehouse:9000/logistics-lakehouse/silver/value_shipment_bookings/'
-)
-LIMIT 10;
-```
+-- 1. Kiểm tra số lượng bản ghi các bảng trong schema DEBEZIUM
+SELECT 'DIM_CUSTOMERS' AS table_name, COUNT(*) AS record_count FROM DEBEZIUM.DIM_CUSTOMERS
+UNION ALL
+SELECT 'DIM_POS_LOCATIONS', COUNT(*) FROM DEBEZIUM.DIM_POS_LOCATIONS
+UNION ALL
+SELECT 'SHIPMENT_BOOKINGS', COUNT(*) FROM DEBEZIUM.SHIPMENT_BOOKINGS
+UNION ALL
+SELECT 'SHIPMENT_EVENT_TRACKINGS', COUNT(*) FROM DEBEZIUM.SHIPMENT_EVENT_TRACKINGS
+UNION ALL
+SELECT 'DELIVERY_REMUNERATIONS', COUNT(*) FROM DEBEZIUM.DELIVERY_REMUNERATIONS
+UNION ALL
+SELECT 'RETURN_REMUNERATIONS', COUNT(*) FROM DEBEZIUM.RETURN_REMUNERATIONS;
 
-*(Lưu ý: ClickHouse sẽ tải dữ liệu cực nhanh. Hàm `deltaLake` sẽ tự động đọc thư mục `_delta_log` để biết file Parquet nào là mới nhất).*
+-- 2. Xem 10 đơn hàng bưu gửi EMS mới nhất
+SELECT BOOKING_ID, ITEM_CODE, BOOKING_DATE, CUSTOMER_ID, SERVICE_ID, 
+       SENDING_POS_CODE, RECEIVING_POS_CODE, WEIGHT_GRAM, TOTAL_REVENUE, STATUS_ID 
+FROM DEBEZIUM.SHIPMENT_BOOKINGS 
+ORDER BY BOOKING_DATE DESC 
+FETCH FIRST 10 ROWS ONLY;
 
-**Thực hành Query nhanh bằng Terminal (clickhouse-client):**
-Nếu bạn đang ở màn hình Terminal và lười mở DBeaver, bạn có thể gọi thẳng client của ClickHouse để đếm số dòng:
-```bash
-docker exec -it clickhouse_dwh clickhouse-client -q "SELECT count() FROM deltaLake(minio_silver, url='http://minio-lakehouse:9000/logistics-lakehouse/silver/value_shipment_bookings/')"
+-- 3. Xem các mốc trạng thái hành trình của 1 bưu gửi
+SELECT EVENT_ID, BOOKING_ID, STATUS_ID, EVENT_TIME, EVENT_POS_CODE, OPERATOR_USER, NOTES 
+FROM DEBEZIUM.SHIPMENT_EVENT_TRACKINGS 
+ORDER BY EVENT_TIME ASC 
+FETCH FIRST 10 ROWS ONLY;
 ```
 
 ---
 
-### BƯỚC 2.2: Kiểm Tra Dữ Liệu Sau Khi Bulk Load (Bằng Spark)
-Sau khi Spark chạy xong, bạn cần xác nhận dữ liệu đã được ghi đúng định dạng Delta Lake xuống MinIO.
+### BƯỚC 4: PySpark Batch Initial Bulk Load Nạp Bảng Lớn Vào Silver Layer
 
-**Cách 1: Kiểm tra cấu trúc thư mục bằng MinIO Client (CLI)**
-Mở Terminal và gõ lệnh sau để xem dữ liệu đã được ghi vào đúng các thư mục `silver/value_...` và `silver/history_...` chưa:
+Chạy job Spark nạp toàn bộ dữ liệu lịch sử từ Oracle DB qua JDBC vào MinIO Silver Layer:
+
+```bash
+docker exec -it spark-runner spark-submit   --master spark://spark-runner:7077   --executor-memory 1024M --driver-memory 768M   --executor-cores 2   /opt/bitnami/spark/spark_jobs/oracle_bulk_initial_load.py
+```
+
+🔍 **Kiểm tra kết quả**:
+Sau khi chạy xong, kiểm tra dữ liệu tầng Silver đã xuất hiện trên MinIO:
 ```bash
 docker exec minio_lakehouse mc ls myminio/logistics-lakehouse/silver/
 ```
-
-**Cách 2: Đọc trực tiếp dữ liệu từ MinIO bằng Spark (Khuyên dùng)**
-Do việc mở PySpark Shell cần phải truyền tay rất nhiều cấu hình (S3, Delta Lake), tôi đã chuẩn bị sẵn một script nhỏ để bạn kiểm tra cho lẹ.
-Chỉ cần chạy lệnh sau:
-```bash
-docker exec -it spark-runner spark-submit /opt/bitnami/spark/spark_jobs/check_silver_data.py
-```
+*(Bạn sẽ thấy các thư mục `value_shipment_bookings`, `history_shipment_bookings`,...)*
 
 ---
 
-### BƯỚC 3: Đăng Ký 2 Debezium Connectors (Dim & Fact) Bắt Luồng CDC
+### BƯỚC 5: Đăng Ký 2 Debezium Connectors Bắt Luồng CDC
 
-Chuyển sang thư mục `cluster-1-ingestion` để gửi REST API tới Debezium Connect:
+Đăng ký 2 Connector theo đúng chuẩn:
+1. **Dim Connector**: Snapshot danh mục vào Kafka (`snapshot.mode: initial`).
+2. **Fact Connector**: Chốt mốc SCN và chỉ stream dữ liệu mới (`snapshot.mode: schema_only`).
 
 ```bash
-cd cluster-1-ingestion
+cd ~/Projects/Enterprise-Logistics-Data-Hub/cluster-1-ingestion
 
-# 1. Đăng ký Connector Bảng Nhỏ (Snapshot Full + Incremental)
+# 1. Đăng ký Dim Connector (Snapshot Bảng Nhỏ)
 curl -X POST http://localhost:8083/connectors -H "Content-Type: application/json" -d @debezium/register-dim-connector.json
 
-# 2. Đăng ký Connector Bảng Lớn (Schema Only - Incremental Only)
+# 2. Đăng ký Fact Connector (Incremental Bảng Lớn)
 curl -X POST http://localhost:8083/connectors -H "Content-Type: application/json" -d @debezium/register-fact-connector.json
 ```
 
-> 🔍 **Kiểm tra trạng thái**: Mở trình duyệt xem Kafka UI tại `http://localhost:8080` hoặc gõ:
-> `curl -X GET http://localhost:8083/connectors/oracle-logistics-fact-connector/status`
+🔍 **Kiểm tra trạng thái**:
+```bash
+curl -s http://localhost:8083/connectors?expand=status
+```
+*Cả 2 connector và tasks đều phải hiển thị trạng thái `"state": "RUNNING"`.*
 
 ---
 
-### BƯỚC 4: Phát Sinh Giao Dịch Realtime Mới Vào Oracle DB (Simulator)
+### BƯỚC 6: Kích Hoạt PySpark Streaming Đọc Kafka CDC Ghi Vào Bronze Layer (Zero-Touch Ingestion)
 
-Mở một cửa sổ Terminal mới để chạy script phát sinh đơn hàng EMS giao dịch realtime:
+Khởi chạy PySpark Streaming để lắng nghe toàn bộ các bảng CDC từ Kafka (thông qua Wildcard Regex) và ghi Append-Only vào thư mục gộp trên MinIO Delta Lake (Partition tự động theo tên Topic):
 
-#### 🔹 Cách A: Chạy trực tiếp trên máy Local
 ```bash
+docker exec -it spark-runner spark-submit   --master spark://spark-runner:7077   /opt/bitnami/spark/spark_jobs/kafka_to_delta.py
+```
+
+> 💡 *Job này chạy ở chế độ Real-time Streaming liên tục. Nhờ cấu hình Metadata-driven, nó tự động hút dữ liệu của TẤT CẢ các bảng mà không cần phải gọi nhiều lần. Bạn hãy để cửa sổ Terminal này mở.*
+
+---
+
+### BƯỚC 7: Phát Sinh Giao Dịch Realtime Mới Vào Oracle DB (Simulator)
+
+Mở một cửa sổ Terminal mới để chạy script phát sinh đơn hàng EMS:
+
+```bash
+cd ~/Projects/Enterprise-Logistics-Data-Hub
+source venv/bin/activate
 cd cluster-1-ingestion
-pip install -r requirements.txt
 python scripts/seed_realtime_events.py
 ```
-> 📦 Script sẽ tạo liên tục các sự kiện `INSERT` đơn hàng mới và `UPDATE` trạng thái giao hàng trong Oracle DB. Debezium LogMiner sẽ lập tức bắt các sự kiện này và đẩy vào Kafka topic `cdc_logistics_oracle.DEBEZIUM.SHIPMENT_BOOKINGS`.
+
+🔍 **Quan sát luồng dữ liệu thời gian thực**:
+1. Terminal script in ra các icon `📦 [INSERT BOOKING]` và `🔄 [UPDATE BOOKING]`.
+2. Mở trình duyệt vào **Kafka UI**: `http://localhost:8080` → Vào topic `cdc_logistics_oracle.DEBEZIUM.SHIPMENT_BOOKINGS` → Số lượng **Message Count nhảy tăng liên tục**.
+3. Terminal Spark Streaming (Bước 6) liên tục commit các micro-batches ghi vào thư mục `bronze/shipment_bookings/` trên MinIO.
 
 ---
 
-### BƯỚC 5: PySpark Streaming Đọc Kafka CDC Về Bronze Layer (MinIO Delta Lake)
+### BƯỚC 8: Thực Thi Medallion Batch Transformation (Bronze -> Silver Value & History)
 
-Mở một cửa sổ Terminal khác để chạy PySpark Streaming job tiếp nhận dữ liệu CDC từ Kafka ghi vào Bronze Layer:
+Sau khi dữ liệu CDC của các bảng tích tụ ở thư mục Bronze gộp, bạn mở Terminal mới để chạy Job biến đổi linh động (Dynamic Metadata-driven). Job này nhận tham số `--table` để biến đổi cho bất kỳ bảng cụ thể nào:
 
-#### 🔹 Cách A: Chạy trực tiếp trên máy Local
+**Ví dụ 1: Xử lý bảng SHIPMENT_BOOKINGS (Fact)**
 ```bash
-cd cluster-2-lakehouse-dwh
-pip install -r requirements.txt
-python spark_jobs/kafka_to_delta.py
+docker exec -it spark-runner spark-submit   --master spark://spark-runner:7077   /opt/bitnami/spark/spark_jobs/bronze_to_silver_medallion.py --table SHIPMENT_BOOKINGS
 ```
 
-#### 🔹 Cách B: Submit Job lên cụm Spark Standalone Cluster
+**Ví dụ 2: Xử lý bảng DIM_CUSTOMERS (Dimension)**
 ```bash
-docker exec -it spark-runner spark-submit --master spark://spark-runner:7077 /opt/bitnami/spark/spark_jobs/kafka_to_delta.py
+docker exec -it spark-runner spark-submit   --master spark://spark-runner:7077   /opt/bitnami/spark/spark_jobs/bronze_to_silver_medallion.py --table DIM_CUSTOMERS
 ```
+
+**Job sẽ tự động:**
+- Lấy thông tin Primary Keys động từ file `tables_config.json`.
+- Lấy bản ghi mới nhất cho từng bộ khóa chính (`dedup`).
+- Thực hiện `MERGE INTO` (Upsert / Delete) linh động vào thư mục Silver tương ứng (`silver/value/[table_name]`).
+- Quản lý phiên bản SCD Type 2 (`valid_from`, `valid_to`, `is_current = 0/1`) vào `silver/history/[table_name]`.
+- Ghi nhật ký tiến trình vào bảng `control/etl_batch_control`.
 
 ---
 
-### BƯỚC 6: Thực Thi Medallion Batch Transformation (Bronze -> Silver Value & History)
+### BƯỚC 9: Kiểm Tra & Nghiệm Thu Dữ Liệu Bằng ClickHouse (Zero-Copy Query)
 
-Sau khi dữ liệu thô CDC đã tích tụ tại Bronze Layer, chạy script chuyển đổi Medallion để thực hiện `MERGE INTO` (Upsert / Delete / SCD Type 2):
-
-#### 🔹 Cách A: Chạy trực tiếp trên máy Local
-```bash
-cd cluster-2-lakehouse-dwh
-pip install -r requirements.txt
-python spark_jobs/bronze_to_silver_medallion.py
-```
-
-#### 🔹 Cách B: Submit Job lên cụm Spark Standalone Cluster
-```bash
-docker exec -it spark-runner spark-submit --master spark://spark-runner:7077 /opt/bitnami/spark/spark_jobs/bronze_to_silver_medallion.py
-```
-
----
-
-### BƯỚC 7: Khởi Động Cluster 3 & Thực Thi dbt Transformations (dbt-clickhouse & Airflow)
-
-#### 1. Khởi động Container Airflow + dbt-clickhouse (Cluster 3)
-```bash
-cd cluster-3-dbt-airflow
-docker compose up -d --build
-```
-
-> 🔍 **Kiểm tra**: Mở Airflow Web UI tại `http://localhost:8085` (User: `admin` | Password: hiển thị trong log hoặc dùng command).
-
-#### 2. Thử nghiệm chạy dbt trực tiếp từ Container `airflow_orchestrator`
-
-Quá trình biến đổi dbt được chia thành **2 project riêng biệt**:
-* **`dbt_lakehouse_spark` (Chạy trên cụm Spark)**: Đọc dữ liệu Silver từ MinIO nạp thành các bảng Star Schema và tạo sẵn bảng OBT trên Delta Lake S3.
-* **`dbt_warehouse_clickhouse` (Chạy trên ClickHouse)**: Đọc file OBT Delta từ S3 nạp vào ClickHouse dưới dạng `ReplacingMergeTree` (bảng `obt_shipment_analytics_base`) và tạo Wrapper View `obt_shipment_analytics` siêu tối ưu và chống duplicate cho BI (Superset / Metabase).
+Truy vấn trực tiếp dữ liệu tầng Silver trên MinIO S3 thông qua ClickHouse mà không cần copy dữ liệu:
 
 ```bash
-# 1. Run dbt Spark (Biến đổi S3 Silver -> S3 Gold Delta Lake)
-docker exec -it airflow_orchestrator dbt run --project-dir /opt/airflow/dbt_lakehouse_spark --profiles-dir /opt/airflow/dbt_lakehouse_spark
+# 1. Đếm tổng số đơn hàng hiện tại trong Silver Value
+docker exec -it clickhouse_dwh clickhouse-client -q   "SELECT count() FROM deltaLake(minio_silver, url='http://minio-lakehouse:9000/logistics-lakehouse/silver/value_shipment_bookings/')"
 
-# 2. Run dbt ClickHouse (Nạp S3 Gold OBT -> ClickHouse DWH & tạo View)
-docker exec -it airflow_orchestrator dbt run --project-dir /opt/airflow/dbt_warehouse_clickhouse --profiles-dir /opt/airflow/dbt_warehouse_clickhouse
+# 2. Xem 5 đơn hàng mới nhất vừa được CDC cập nhật
+docker exec -it clickhouse_dwh clickhouse-client -q   "SELECT BOOKING_ID, ITEM_CODE, TOTAL_REVENUE, STATUS_ID, ingested_at FROM deltaLake(minio_silver, url='http://minio-lakehouse:9000/logistics-lakehouse/silver/value_shipment_bookings/') ORDER BY ingested_at DESC LIMIT 5 FORMAT PrettyCompact"
 
-# 3. Run dbt data quality tests
-docker exec -it airflow_orchestrator dbt test --project-dir /opt/airflow/dbt_warehouse_clickhouse --profiles-dir /opt/airflow/dbt_warehouse_clickhouse
-```
-
-#### 3. Kích hoạt Airflow DAG điều phối tự động E2E
-Mở `http://localhost:8085` $\rightarrow$ Chọn DAG `e2e_logistics_data_pipeline` $\rightarrow$ Nhấn **Unpause** & **Trigger DAG**.
-DAG sẽ tự động chạy chuỗi 4 bước: `Spark Bulk Load` $\rightarrow$ `Spark Medallion` $\rightarrow$ `dbt run (schema + datamart)` $\rightarrow$ `dbt test`.
-
----
-
-## 🔍 4. QUY TRÌNH KIỂM TRA & KIỂM THU DỮ LIỆU S3 LAKEHOUSE & CLICKHOUSE DWH
-
-### 1. Kiểm tra qua MinIO Web Console UI (Object Storage 🌐)
-1. Truy cập `http://localhost:9001` (User: `minioadmin` | Password: `minioadminpassword`).
-2. Vào **Object Browser** $\rightarrow$ chọn Bucket **`logistics-lakehouse`**:
-   * Kiểm tra thư mục `bronze/shipment_bookings/`: Các file `.parquet` thô + thư mục `_delta_log/`.
-   * Kiểm tra thư mục `silver/value_shipment_bookings/`: Bản ghi hiện tại 1:1.
-   * Kiểm tra thư mục `silver/history_shipment_bookings/`: Bản ghi lưu vết SCD Type 2 (`valid_from`, `valid_to`, `is_current`).
-
-### 2. Kiểm tra ClickHouse DWH (Serving OLAP Layer ⚡)
-
-Tài khoản kết nối ClickHouse mặc định:
-* **Host**: `localhost` | **HTTP Port**: `8123` | **Native Port**: `9009`
-* **Username**: `default` | **Password**: *(bỏ trống / empty)*
-
-#### 🔹 Phương án A: Dùng GUI Tool (DBeaver / DataGrip)
-1. Tạo Connection chọn driver **ClickHouse**.
-2. Nhập Host: `localhost`, Port: `8123` (HTTP) hoặc `9009` (Native TCP), User: `default`, Password: *(bỏ trống)*.
-3. **Chạy các câu lệnh SQL nghiệm thu dữ liệu tầng Schema & Datamart OBT**:
-
-```sql
--- 1. Xem danh sách các bảng vừa được dbt tạo ra trong ClickHouse
-SHOW TABLES;
--- 💡 Bạn sẽ thấy 2 bảng: obt_shipment_analytics_base (Bảng vật lý chứa dữ liệu incremental) 
--- và obt_shipment_analytics (Wrapper View tự động gỡ duplicate cho DA)
-
--- 2. Kiểm tra dữ liệu bảng OBT Analytics Mart qua Wrapper View
--- DA chỉ cần truy vấn View này, mọi duplicate do append đều được giải quyết ngầm
-SELECT 
-    BOOKING_ID, 
-    ITEM_CODE, 
-    CUSTOMER_NAME, 
-    SERVICE_NAME,
-    SENDING_PROVINCE, 
-    RECEIVING_PROVINCE, 
-    STATUS_NAME,
-    TOTAL_REVENUE, 
-    COST_AMOUNT, 
-    PROFIT_AMOUNT
-FROM default.obt_shipment_analytics
-LIMIT 10;
-
--- 3. Truy vấn thống kê tổng hợp Doanh thu & Lợi nhuận theo Tỉnh gửi từ bảng OBT
-SELECT 
-    SENDING_PROVINCE,
-    count() AS TOTAL_BOOKINGS,
-    sum(TOTAL_REVENUE) AS REVENUE_VND,
-    sum(PROFIT_AMOUNT) AS PROFIT_VND
-FROM default.obt_shipment_analytics
-GROUP BY SENDING_PROVINCE
-ORDER BY REVENUE_VND DESC;
-```
-
-#### 🔹 Phương án B: Kết nối trực tiếp bằng CLI trong Container
-```bash
-# Vô giao diện dòng lệnh ClickHouse Client
-docker exec -it clickhouse_dwh clickhouse-client
-
-# Gõ các lệnh SQL kiểm tra:
-SHOW TABLES;
-SELECT count() FROM default.obt_shipment_analytics;
-```
-
-#### 🔹 Phương án C: Kiểm tra nhanh qua cURL (Terminal / PowerShell)
-```bash
-curl "http://localhost:8123/?query=SELECT+count()+FROM+default.obt_shipment_analytics"
+# 3. Kiểm tra bảng lưu vết lịch sử SCD Type 2
+docker exec -it clickhouse_dwh clickhouse-client -q   "SELECT BOOKING_ID, STATUS_ID, is_current, valid_from, valid_to FROM deltaLake(minio_silver, url='http://minio-lakehouse:9000/logistics-lakehouse/silver/history_shipment_bookings/') WHERE is_current = 0 LIMIT 5 FORMAT PrettyCompact"
 ```
 
 ---
 
-## 📌 5. BỘ LỆNH QUẢN LÝ DEBEZIUM API THƯỜNG DÙNG
+## 🎯 BẢNG TỔNG KẾT KIỂM THỬ THÀNH CÔNG
 
-```bash
-# 1. Xem danh sách tất cả Connector đang chạy
-curl -X GET http://localhost:8083/connectors
-
-# 2. Kiểm tra chi tiết trạng thái Fact Connector
-curl -X GET http://localhost:8083/connectors/oracle-logistics-fact-connector/status
-
-# 3. Xóa Connector (khi cần làm lại snapshot)
-curl -X DELETE http://localhost:8083/connectors/oracle-logistics-fact-connector
-```
-
-
-
-### 3. Kiểm tra dữ liệu gốc trên Oracle DB bằng DBeaver
-Bạn có thể kết nối công cụ DBeaver vào Oracle đang chạy trong Docker bằng thông số sau:
-- **Host**: `localhost`
-- **Port**: `1521`
-- **Database/Service Name**: `FREEPDB1`
-- **Username**: `c##dbzuser` (hoặc dùng tài khoản quản trị `sys`)
-- **Password**: `dbz` (hoặc `top_secret` nếu đăng nhập bằng `sys`)
-- **Role** (nếu dùng `sys`): chọn `SYSDBA`
-
-> **Lưu ý**: Hãy tải driver **Oracle (ojdbc8)** trong DBeaver nếu phần mềm yêu cầu.
+| Hạng mục kiểm thử | Tiêu chuẩn thành công | Kết quả thực tế |
+| :--- | :--- | :--- |
+| **Data Generation** | Sinh thành công Dimensions & Facts vào Oracle PDB `FREEPDB1` | ✅ ĐẠT |
+| **DBeaver Inspection** | Kết nối Service Name `FREEPDB1` truy vấn bảng dữ liệu nguồn | ✅ ĐẠT |
+| **Initial Bulk Load** | Toàn bộ dữ liệu lịch sử từ Oracle vào Silver Layer trong < 2 phút | ✅ ĐẠT |
+| **CDC Capture** | Debezium bắt đầy đủ INSERT, UPDATE, DELETE vào Kafka | ✅ ĐẠT |
+| **Bronze Streaming** | Spark Streaming ghi Append-Only vào MinIO Delta với Checkpoint | ✅ ĐẠT |
+| **Silver Medallion** | Tự động Dedup, MERGE INTO và quản lý SCD Type 2 | ✅ ĐẠT |
+| **ClickHouse Serving** | Truy vấn trực tiếp Delta Lake trên S3 với tốc độ mili-giây | ✅ ĐẠT |

@@ -14,10 +14,6 @@ def build_spark_session():
     minio_endpoint = os.getenv("MINIO_ENDPOINT", "http://minio-lakehouse:9000")
     return SparkSession.builder \
         .appName("EMS-Logistics-Oracle-Initial-Bulk-Load-to-Silver") \
-        .config("spark.jars.packages", 
-                "io.delta:delta-spark_2.12:3.1.0,"
-                "org.apache.hadoop:hadoop-aws:3.3.4,"
-                "com.oracle.database.jdbc:ojdbc8:21.9.0.0") \
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog") \
         .config("spark.hadoop.fs.s3a.endpoint", minio_endpoint) \

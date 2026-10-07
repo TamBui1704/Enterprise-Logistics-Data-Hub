@@ -1,0 +1,20 @@
+{
+  "topic_prefix": "cdc_logistics_oracle.DEBEZIUM",
+  "bronze_base_path": "s3a://logistics-lakehouse/bronze/all_tables",
+  "silver_value_base_path": "s3a://logistics-lakehouse/silver/value",
+  "silver_history_base_path": "s3a://logistics-lakehouse/silver/history",
+  "checkpoint_base_path": "s3a://logistics-lakehouse/checkpoints",
+  "tables": {
+    "DIM_CUSTOMERS": { "primary_keys": ["CUSTOMER_ID"] },
+    "DIM_SERVICES": { "primary_keys": ["SERVICE_ID"] },
+    "DIM_POS_LOCATIONS": { "primary_keys": ["POS_CODE"] },
+    "DIM_WEIGHT_TIERS": { "primary_keys": ["WEIGHT_TIER_ID"] },
+    "DIM_ROUTING_TYPES": { "primary_keys": ["ROUTING_TYPE_ID"] },
+    "DIM_DELIVERY_STATUSES": { "primary_keys": ["STATUS_ID"] },
+    "DIM_FAILURE_REASONS": { "primary_keys": ["FAILURE_REASON_ID"] },
+    "SHIPMENT_BOOKINGS": { "primary_keys": ["BOOKING_ID"] },
+    "DELIVERY_REMUNERATIONS": { "primary_keys": ["REMUNERATION_ID"] },
+    "RETURN_REMUNERATIONS": { "primary_keys": ["RETURN_ID"] },
+    "SHIPMENT_EVENT_TRACKINGS": { "primary_keys": ["EVENT_ID"] }
+  }
+}

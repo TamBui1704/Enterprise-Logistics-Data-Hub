@@ -16,6 +16,10 @@ services:
     command: server /data --console-address ":9001"
     volumes:
       - ${MINIO_DATA_VOLUME:-minio_data}:/data
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     networks:
       - logistics_net
 
@@ -38,7 +42,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1536M
+          memory: 1024M
     networks:
       - logistics_net
 
@@ -72,7 +76,7 @@ services:
     environment:
       - SPARK_MODE=worker
       - SPARK_MASTER_URL=spark://spark-runner:7077
-      - SPARK_WORKER_MEMORY=3G
+      - SPARK_WORKER_MEMORY=1024M
       - SPARK_WORKER_CORES=2
     volumes:
       - ./spark_jobs:/opt/bitnami/spark/spark_jobs
@@ -81,10 +85,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1024M
+          memory: 1536M
     networks:
       - logistics_net
-
 
 networks:
   logistics_net:
@@ -93,7 +96,3 @@ networks:
 volumes:
   minio_data:
   clickhouse_data:
-
-
-
-

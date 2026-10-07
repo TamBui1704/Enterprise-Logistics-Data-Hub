@@ -5,8 +5,7 @@ def main():
     minio_endpoint = os.getenv("MINIO_ENDPOINT", "http://minio-lakehouse:9000")
     spark = SparkSession.builder \
         .appName("Check-Silver-Data") \
-        .config("spark.jars.packages", "io.delta:delta-spark_2.12:3.1.0,org.apache.hadoop:hadoop-aws:3.3.4") \
-        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
+                .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog") \
         .config("spark.hadoop.fs.s3a.endpoint", minio_endpoint) \
         .config("spark.hadoop.fs.s3a.access.key", "minioadmin") \
