@@ -79,15 +79,13 @@ docker ps --format "table {{.Names}}	{{.Status}}	{{.Ports}}"
 - Cluster 1: `source_oracle_db` (healthy), `kafka_broker` (healthy), `debezium_cdc`, `kafka_ui`
 - Cluster 2: `minio_lakehouse`, `clickhouse_dwh`, `spark-runner`, `spark-worker`
 
-Nếu có container chưa chạy, hãy khởi động:
+Nếu có container chưa chạy, hãy khởi động (đảm bảo đứng ở thư mục gốc dự án):
 ```bash
 # Cluster 1 (Ingestion & Source)
-cd ~/Projects/Enterprise-Logistics-Data-Hub/cluster-1-ingestion
-docker compose up -d
+cd cluster-1-ingestion && docker compose up -d && cd ..
 
 # Cluster 2 (Lakehouse & DWH)
-cd ~/Projects/Enterprise-Logistics-Data-Hub/cluster-2-lakehouse-dwh
-docker compose up -d
+cd cluster-2-lakehouse-dwh && docker compose up -d && cd ..
 ```
 
 ---
@@ -99,8 +97,8 @@ docker compose up -d
 Dự án cung cấp sẵn script `generate_bulk_10m_data.py` sử dụng thư viện Python `oracledb` chạy đa tiến trình (multiprocessing):
 
 ```bash
-# 1. Di chuyển vào thư mục gốc và kích hoạt môi trường ảo
-cd ~/Projects/Enterprise-Logistics-Data-Hub
+# 1. Tại thư mục gốc dự án, kích hoạt môi trường ảo (tạo venv nếu chưa có)
+# python3 -m venv venv
 source venv/bin/activate
 
 # 2. Cài đặt thư viện nếu chưa có
@@ -199,7 +197,7 @@ docker exec minio_lakehouse mc ls myminio/logistics-lakehouse/silver/
 2. **Fact Connector**: Chốt mốc SCN và chỉ stream dữ liệu mới (`snapshot.mode: schema_only`).
 
 ```bash
-cd ~/Projects/Enterprise-Logistics-Data-Hub/cluster-1-ingestion
+cd cluster-1-ingestion
 
 # 1. Đăng ký Dim Connector (Snapshot Bảng Nhỏ)
 curl -X POST http://localhost:8083/connectors -H "Content-Type: application/json" -d @debezium/register-dim-connector.json
@@ -233,7 +231,7 @@ docker exec -it spark-runner spark-submit   --master spark://spark-runner:7077  
 Mở một cửa sổ Terminal mới để chạy script phát sinh đơn hàng EMS:
 
 ```bash
-cd ~/Projects/Enterprise-Logistics-Data-Hub
+# Tại thư mục gốc dự án:
 source venv/bin/activate
 cd cluster-1-ingestion
 python scripts/seed_realtime_events.py

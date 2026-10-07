@@ -1,6 +1,14 @@
-# Environments
+# Environment variables / Secrets
+.env
+*.env
+**/.env
+.env.*
+!.env.example
+!**/.env.example
+
+# Environments & Virtual environments
 venv/
-.env/
+.venv/
 env/
 ENV/
 env.bak/
@@ -35,9 +43,10 @@ target/
 dbt_packages/
 logs/
 
-# IDE
+# IDE & OS
 .idea/
 .vscode/
 *.swp
 *.swo
 .DS_Store
+
