@@ -18,6 +18,12 @@
     "decimal.handling.mode": "double",
     "signal.data.collection": "DEBEZIUM.DEBEZIUM_SIGNAL",
     "tombstones.on.delete": "false",
+    "heartbeat.interval.ms": "10000",
+    "heartbeat.action.query": "UPDATE DEBEZIUM.DEBEZIUM_HEARTBEAT SET HEARTBEAT_TIME = CURRENT_TIMESTAMP WHERE ID = 2",
+    "log.mining.strategy": "online_catalog",
+    "log.mining.batch.size.default": "100000",
+    "log.mining.batch.size.max": "200000",
+    "log.mining.sleep.time.default.ms": "1000",
     "name": "oracle-logistics-fact-connector"
   }
 }

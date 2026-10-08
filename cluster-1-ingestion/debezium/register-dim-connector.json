@@ -9,7 +9,7 @@
     "database.password": "dbz",
     "database.dbname": "FREE",
     "database.pdb.name": "FREEPDB1",
-    "topic.prefix": "cdc_logistics_oracle",
+    "topic.prefix": "cdc_dim",
     "schema.history.internal.kafka.bootstrap.servers": "kafka:29092",
     "schema.history.internal.kafka.topic": "schema-changes.logistics.dim",
     "table.include.list": "DEBEZIUM.DIM_CUSTOMERS,DEBEZIUM.DIM_SERVICES,DEBEZIUM.DIM_POS_LOCATIONS,DEBEZIUM.DIM_WEIGHT_TIERS,DEBEZIUM.DIM_ROUTING_TYPES,DEBEZIUM.DIM_DELIVERY_STATUSES,DEBEZIUM.DIM_FAILURE_REASONS",
@@ -18,6 +18,16 @@
     "decimal.handling.mode": "double",
     "signal.data.collection": "DEBEZIUM.DEBEZIUM_SIGNAL",
     "tombstones.on.delete": "false",
+    "heartbeat.interval.ms": "10000",
+    "heartbeat.action.query": "UPDATE DEBEZIUM.DEBEZIUM_HEARTBEAT SET HEARTBEAT_TIME = CURRENT_TIMESTAMP WHERE ID = 1",
+    "log.mining.strategy": "online_catalog",
+    "log.mining.batch.size.default": "100000",
+    "log.mining.batch.size.max": "200000",
+    "log.mining.sleep.time.default.ms": "1000",
+    "transforms": "reroute",
+    "transforms.reroute.type": "org.apache.kafka.connect.transforms.RegexRouter",
+    "transforms.reroute.regex": "cdc_dim\\.(.*)",
+    "transforms.reroute.replacement": "cdc_logistics_oracle.$1",
     "name": "oracle-logistics-dim-connector"
   }
 }
