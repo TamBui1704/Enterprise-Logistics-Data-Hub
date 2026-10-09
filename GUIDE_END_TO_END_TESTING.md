@@ -190,25 +190,25 @@ docker exec minio_lakehouse mc ls myminio/logistics-lakehouse/silver/
 
 ---
 
-### BƯỚC 5: Đăng Ký 2 Debezium Connectors Bắt Luồng CDC
+### BƯỚC 5: Đăng Ký 2 Debezium Connectors Độc Lập Chạy Song Song Ổn Định
 
-Đăng ký 2 Connector theo đúng chuẩn:
-1. **Dim Connector**: Snapshot danh mục vào Kafka (`snapshot.mode: initial`).
-2. **Fact Connector**: Chốt mốc SCN và chỉ stream dữ liệu mới (`snapshot.mode: schema_only`).
+Cấu hình 2 Connector theo chuẩn Production độc lập (Cách B) để chống triệt để lỗi `ORA-01368` và xung đột JMX MBean:
+- **Dim Connector (`oracle-logistics-dim-connector`)**: Snapshot danh mục (`snapshot.mode: initial`), dùng `topic.prefix: cdc_dim` + SMT RegexRouter để định tuyến về topic `cdc_logistics_oracle.*` (tránh đụng JMX metrics) và kích hoạt Heartbeat ID 1 để giữ SCN luôn cập nhật theo thời gian thực.
+- **Fact Connector (`oracle-logistics-fact-connector`)**: Chốt mốc SCN và stream dữ liệu mới (`snapshot.mode: schema_only`), dùng `topic.prefix: cdc_logistics_oracle` và kích hoạt Heartbeat ID 2.
 
 ```bash
 cd cluster-1-ingestion
 
-# 1. Đăng ký Dim Connector (Snapshot Bảng Nhỏ)
+# 1. Đăng ký Dim Connector (Snapshot Bảng Danh Mục)
 curl -X POST http://localhost:8083/connectors -H "Content-Type: application/json" -d @debezium/register-dim-connector.json
 
-# 2. Đăng ký Fact Connector (Incremental Bảng Lớn)
+# 2. Đăng ký Fact Connector (Incremental Bảng Giao Dịch)
 curl -X POST http://localhost:8083/connectors -H "Content-Type: application/json" -d @debezium/register-fact-connector.json
 ```
 
 🔍 **Kiểm tra trạng thái**:
 ```bash
-curl -s http://localhost:8083/connectors?expand=status
+curl -s http://localhost:8083/connectors?expand=status | jq .
 ```
 *Cả 2 connector và tasks đều phải hiển thị trạng thái `"state": "RUNNING"`.*
 
@@ -216,13 +216,25 @@ curl -s http://localhost:8083/connectors?expand=status
 
 ### BƯỚC 6: Kích Hoạt PySpark Streaming Đọc Kafka CDC Ghi Vào Bronze Layer (Zero-Touch Ingestion)
 
-Khởi chạy PySpark Streaming để lắng nghe toàn bộ các bảng CDC từ Kafka (thông qua Wildcard Regex) và ghi Append-Only vào thư mục gộp trên MinIO Delta Lake (Partition tự động theo tên Topic):
+Khởi chạy PySpark Streaming để lắng nghe toàn bộ các bảng CDC từ Kafka (thông qua Wildcard Regex) và ghi Append-Only vào thư mục gộp trên MinIO Delta Lake (Partition tự động theo tên Topic). Bạn có thể lựa chọn 1 trong 2 chế độ chạy:
 
+#### Lựa chọn A: Chế độ Real-time Streaming liên tục 24/7 (Continuous Streaming)
+Lắng nghe liên tục trong thời gian thực, có message mới là nạp ngay vào Delta Lake:
 ```bash
-docker exec -it spark-runner spark-submit   --master spark://spark-runner:7077   /opt/bitnami/spark/spark_jobs/kafka_to_delta.py
+docker exec -it spark-runner spark-submit \
+  --master spark://spark-runner:7077 \
+  /opt/bitnami/spark/spark_jobs/kafka_to_delta.py
 ```
+> 💡 *Job này giữ terminal mở liên tục để đón dữ liệu real-time. Bạn hãy để cửa sổ Terminal này mở.*
 
-> 💡 *Job này chạy ở chế độ Real-time Streaming liên tục. Nhờ cấu hình Metadata-driven, nó tự động hút dữ liệu của TẤT CẢ các bảng mà không cần phải gọi nhiều lần. Bạn hãy để cửa sổ Terminal này mở.*
+#### Lựa chọn B: Chế độ Batch AvailableNow `--once` (Khuyên dùng khi Test hoặc Tiết kiệm RAM)
+Kéo toàn bộ dữ liệu mới tích tụ từ mốc checkpoint lần trước đến nay, ghi xong vào Bronze rồi **tự động thoát hoàn toàn để giải phóng RAM/CPU**:
+```bash
+docker exec -it spark-runner spark-submit \
+  --master spark://spark-runner:7077 \
+  /opt/bitnami/spark/spark_jobs/kafka_to_delta.py --once
+```
+> 💡 *Nhờ tính năng `Trigger.AvailableNow` và cơ chế Checkpoint thông minh của Spark, job sẽ tự nhớ offset đã đọc, không bao giờ đọc trùng lặp hay sót dữ liệu. Rất lý tưởng khi chạy thử nghiệm trên máy local hoặc lên lịch định kỳ theo mẻ (Micro-batch) qua Airflow/Cron.*
 
 ---
 
@@ -240,35 +252,70 @@ python scripts/seed_realtime_events.py
 🔍 **Quan sát luồng dữ liệu thời gian thực**:
 1. Terminal script in ra các icon `📦 [INSERT BOOKING]` và `🔄 [UPDATE BOOKING]`.
 2. Mở trình duyệt vào **Kafka UI**: `http://localhost:8080` → Vào topic `cdc_logistics_oracle.DEBEZIUM.SHIPMENT_BOOKINGS` → Số lượng **Message Count nhảy tăng liên tục**.
-3. Terminal Spark Streaming (Bước 6) liên tục commit các micro-batches ghi vào thư mục `bronze/shipment_bookings/` trên MinIO.
+3. Terminal Spark Streaming (Bước 6) liên tục commit các micro-batches ghi vào thư mục `bronze/all_tables/` (được tự động phân vùng theo partition `kafka_topic`) trên MinIO.
 
 ---
 
 ### BƯỚC 8: Thực Thi Medallion Batch Transformation (Bronze -> Silver Value & History)
 
-Sau khi dữ liệu CDC của các bảng tích tụ ở thư mục Bronze gộp, bạn mở Terminal mới để chạy Job biến đổi linh động (Dynamic Metadata-driven). Job này nhận tham số `--table` để biến đổi cho bất kỳ bảng cụ thể nào:
+Sau khi dữ liệu CDC tích tụ ở tầng Bronze, chạy job biến đổi linh động (Dynamic Metadata-driven, Tự động hiểu Schema, Idempotent MERGE SCD Type 2 & Cách ly DLQ).
 
-**Ví dụ 1: Xử lý bảng SHIPMENT_BOOKINGS (Fact)**
+#### 1. Lệnh thực thi cơ bản (Tự động đọc Watermark Cutoff):
 ```bash
+# Xử lý bảng SHIPMENT_BOOKINGS (Fact)
 docker exec -it spark-runner spark-submit   --master spark://spark-runner:7077   /opt/bitnami/spark/spark_jobs/bronze_to_silver_medallion.py --table SHIPMENT_BOOKINGS
-```
 
-**Ví dụ 2: Xử lý bảng DIM_CUSTOMERS (Dimension)**
-```bash
+# Xử lý bảng DIM_CUSTOMERS (Dimension)
 docker exec -it spark-runner spark-submit   --master spark://spark-runner:7077   /opt/bitnami/spark/spark_jobs/bronze_to_silver_medallion.py --table DIM_CUSTOMERS
+
+# Hoặc xử lý TẤT CẢ các bảng trong 1 lượt chạy:
+docker exec -it spark-runner spark-submit   --master spark://spark-runner:7077   /opt/bitnami/spark/spark_jobs/bronze_to_silver_medallion.py --table ALL
 ```
 
-**Job sẽ tự động:**
-- Lấy thông tin Primary Keys động từ file `tables_config.json`.
-- Lấy bản ghi mới nhất cho từng bộ khóa chính (`dedup`).
-- Thực hiện `MERGE INTO` (Upsert / Delete) linh động vào thư mục Silver tương ứng (`silver/value/[table_name]`).
-- Quản lý phiên bản SCD Type 2 (`valid_from`, `valid_to`, `is_current = 0/1`) vào `silver/history/[table_name]`.
-- Ghi nhật ký tiến trình vào bảng `control/etl_batch_control`.
+#### 2. Điều khiển khung thời gian xử lý (Cutoff & Watermark Controls tương tự SSIS):
+Bạn có thể chủ động chỉ định điểm bắt đầu và kết thúc:
+```bash
+# Chỉ định mốc bắt đầu và kết thúc cụ thể:
+docker exec -it spark-runner spark-submit   --master spark://spark-runner:7077   /opt/bitnami/spark/spark_jobs/bronze_to_silver_medallion.py   --table SHIPMENT_BOOKINGS   --from-ts "2026-10-08 00:00:00"   --to-ts "2026-10-08 23:59:59"
+
+# Quét lại toàn bộ Bronze từ mốc khởi thủy (Idempotent MERGE không mất Baseline Bulk Load):
+docker exec -it spark-runner spark-submit \
+  --master spark://spark-runner:7077 \
+  /opt/bitnami/spark/spark_jobs/bronze_to_silver_medallion.py \
+  --table SHIPMENT_BOOKINGS \
+  --from-ts "1970-01-01 00:00:00"
+
+# Cờ Full Refresh (chạy lại và ghi đè từ đầu, khuyên dùng cho Dimensions):
+docker exec -it spark-runner spark-submit \
+  --master spark://spark-runner:7077 \
+  /opt/bitnami/spark/spark_jobs/bronze_to_silver_medallion.py \
+  --table DIM_CUSTOMERS --full-refresh
+
+> 💡 **Lưu ý quan trọng về cờ `--full-refresh`**:
+> - Đối với các bảng **Dimensions**: Cả dữ liệu ban đầu và CDC đều nằm trọn vẹn trong Bronze, cờ `--full-refresh` sẽ tính toán lại chuỗi SCD Type 2 từ đầu rất tốt.
+> - Đối với các bảng **Facts**: Do 50,000 bản ghi lịch sử ban đầu được nạp bằng **Bulk Load JDBC (Bước 4)**, bạn nên chạy mặc định (không cờ) hoặc dùng `--from-ts "1970-01-01 00:00:00"` để script tự động hòa trộn (MERGE) các sự kiện CDC mà không ghi đè mất Baseline lịch sử.
+```
+
+#### 3. Các tính năng chuyên nghiệp tự động:
+- **Tự hiểu Schema động**: Tự động parse cấu trúc JSON từ CDC payload của từng bảng, tự động tiến hóa schema (`mergeSchema = true`) khi bảng nguồn thêm cột.
+- **Idempotency tuyệt đối**: Dù bạn chạy lại script bao nhiêu lần, dữ liệu trên `silver/value_[table]` (1:1 Snapshot) và `silver/history_[table]` (SCD Type 2) **hoàn toàn không bị trùng lặp (Zero Duplicates)** nhờ cơ chế Anti-Join trên `(PK, valid_from)`.
+- **Bảo vệ luồng bằng Dead Letter Queue (DLQ)**: Bản ghi lỗi schema, lỗi parse hoặc thiếu Primary Key được tự động đẩy vào `s3a://logistics-lakehouse/quarantine/dlq_[table]` kèm lý do lỗi, không bao giờ làm crash luồng.
+- **Bảng Watermark & Lineage Audit**: 
+  - `control/cutoff_watermarks`: Quản lý mốc High Watermark của từng bảng.
+  - `control/etl_batch_control`: Lưu vết từng Batch ID, thời gian chạy, số bản ghi xử lý, bản ghi DLQ, trạng thái.
 
 ---
 
-### BƯỚC 9: Kiểm Tra & Nghiệm Thu Dữ Liệu Bằng ClickHouse (Zero-Copy Query)
+### BƯỚC 9: Kiểm Tra & Nghiệm Thu Dữ Liệu (Reconciliation & Zero-Copy Query)
 
+#### 1. Kiểm tra & Đối soát tự động 11 bảng bằng Spark Audit Script:
+Chạy script đối soát tự động để kiểm tra số lượng bản ghi của toàn bộ 11 bảng (7 Dimensions + 4 Facts), đảm bảo dữ liệu tầng Silver Value khớp 1:1 với nguồn Oracle và History SCD Type 2 phản ánh chuẩn xác:
+```bash
+docker exec -it spark-runner python3 /opt/bitnami/spark/spark_jobs/check_silver_data.py
+```
+*(Bảng ma trận kết quả sẽ hiển thị cột `VALUE COUNT` và `HIST ACTIVE (1)` đạt trạng thái `✅ KHỚP 100%` trên toàn bộ 11 bảng).*
+
+#### 2. Truy vấn trực tiếp dữ liệu tầng Silver bằng ClickHouse (Zero-Copy Query):
 Truy vấn trực tiếp dữ liệu tầng Silver trên MinIO S3 thông qua ClickHouse mà không cần copy dữ liệu:
 
 ```bash

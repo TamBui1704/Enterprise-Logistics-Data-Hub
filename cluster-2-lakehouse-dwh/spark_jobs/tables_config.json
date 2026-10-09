@@ -1,8 +1,9 @@
 {
   "topic_prefix": "cdc_logistics_oracle.DEBEZIUM",
   "bronze_base_path": "s3a://logistics-lakehouse/bronze/all_tables",
-  "silver_value_base_path": "s3a://logistics-lakehouse/silver/value",
-  "silver_history_base_path": "s3a://logistics-lakehouse/silver/history",
+  "silver_base_path": "s3a://logistics-lakehouse/silver",
+  "quarantine_base_path": "s3a://logistics-lakehouse/quarantine",
+  "control_base_path": "s3a://logistics-lakehouse/control",
   "checkpoint_base_path": "s3a://logistics-lakehouse/checkpoints",
   "tables": {
     "DIM_CUSTOMERS": { "primary_keys": ["CUSTOMER_ID"] },

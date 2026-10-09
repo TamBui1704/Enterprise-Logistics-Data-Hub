@@ -1,7 +1,8 @@
 import os
 import json
+import argparse
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, current_timestamp, get_json_object
+from pyspark.sql.functions import col, current_timestamp, get_json_object, coalesce, from_unixtime
 
 def build_spark_session():
     minio_endpoint = os.getenv("MINIO_ENDPOINT", "http://minio-lakehouse:9000")
@@ -9,6 +10,7 @@ def build_spark_session():
         .appName("EMS-Logistics-Kafka-CDC-to-Bronze-Delta-Wildcard") \
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog") \
+        .config("spark.sql.session.timeZone", "Asia/Ho_Chi_Minh") \
         .config("spark.hadoop.fs.s3a.endpoint", minio_endpoint) \
         .config("spark.hadoop.fs.s3a.access.key", "minioadmin") \
         .config("spark.hadoop.fs.s3a.secret.key", "minioadminpassword") \
@@ -18,11 +20,17 @@ def build_spark_session():
         .getOrCreate()
 
 def main():
+    parser = argparse.ArgumentParser(description="Kafka CDC to Bronze Delta Stream")
+    parser.add_argument("--once", action="store_true", help="Kéo toàn bộ message mới rồi tự ngắt (AvailableNow)")
+    args, _ = parser.parse_known_args()
+
     print("⚡ Khởi tạo Spark Streaming Engine nạp Raw CDC sang Bronze Delta Layer (Multi-tables)...")
     spark = build_spark_session()
     spark.sparkContext.setLogLevel("WARN")
 
-    with open("tables_config.json", "r") as f:
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    config_path = os.getenv("TABLES_CONFIG_PATH", os.path.join(script_dir, "tables_config.json"))
+    with open(config_path, "r", encoding="utf-8") as f:
         config = json.load(f)
 
     # Lấy prefix từ cấu hình và build Regex Pattern động
@@ -38,31 +46,50 @@ def main():
         .option("startingOffsets", "earliest") \
         .load()
 
-    # KHÔNG ép schema ở tầng Bronze. Chỉ bóc tách metadata.
-    parsed_df = kafka_df.select(
+    # Bóc tách metadata Debezium chuẩn xác: Giữ ts_ms nguyên bản + bổ sung event_time (Human-readable)
+    base_df = kafka_df.select(
         col("key").cast("string").alias("kafka_key"),
         col("value").cast("string").alias("raw_value"),
-        get_json_object(col("value").cast("string"), "$.op").alias("op"),
-        get_json_object(col("value").cast("string"), "$.ts_ms").cast("long").alias("ts_ms"),
+        coalesce(
+            get_json_object(col("value").cast("string"), "$.payload.op"),
+            get_json_object(col("value").cast("string"), "$.op")
+        ).alias("op"),
+        coalesce(
+            get_json_object(col("value").cast("string"), "$.payload.ts_ms"),
+            get_json_object(col("value").cast("string"), "$.ts_ms")
+        ).cast("long").alias("ts_ms"),
         col("topic").alias("kafka_topic"),
         col("partition").alias("kafka_partition"),
         col("offset").alias("kafka_offset"),
         col("timestamp").alias("kafka_timestamp")
-    ).withColumn("ingested_at", current_timestamp())
+    )
+
+    parsed_df = base_df.withColumn(
+        "event_time", from_unixtime(col("ts_ms") / 1000).cast("timestamp")
+    ).withColumn(
+        "ingested_at", current_timestamp()
+    )
 
     delta_path = config["bronze_base_path"]
     chk_base = config["checkpoint_base_path"]
     checkpoint_path = f"{chk_base}/bronze_all_tables"
 
-    print(f"🚀 Ghi luồng Streaming Append-Only vào MinIO, tự động chia Partition theo Topic...")
-    query = parsed_df.writeStream \
+    writer = parsed_df.writeStream \
         .format("delta") \
         .outputMode("append") \
         .partitionBy("kafka_topic") \
-        .option("checkpointLocation", checkpoint_path) \
-        .start(delta_path)
+        .option("mergeSchema", "true") \
+        .option("checkpointLocation", checkpoint_path)
 
+    if args.once or os.getenv("TRIGGER_AVAILABLE_NOW", "false").lower() == "true":
+        print("🚀 Chạy chế độ: Trigger.AvailableNow (Xử lý toàn bộ message tồn đọng rồi tự tắt để giải phóng RAM)...")
+        writer = writer.trigger(availableNow=True)
+    else:
+        print("🚀 Chạy chế độ: Realtime Continuous Streaming (Lắng nghe liên tục)...")
+
+    query = writer.start(delta_path)
     query.awaitTermination()
+    print("✅ Hoàn tất tiến trình Streaming!")
 
 if __name__ == "__main__":
     main()
