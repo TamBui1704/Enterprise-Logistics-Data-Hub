@@ -5,6 +5,6 @@ dbt_lakehouse_spark:
       type: spark
       method: thrift
       schema: default
-      host: spark_runner
+      host: spark-runner
       port: 10000
       user: spark

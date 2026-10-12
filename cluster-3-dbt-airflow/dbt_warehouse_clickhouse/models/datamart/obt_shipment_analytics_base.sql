@@ -2,8 +2,8 @@
     materialized='incremental',
     engine='ReplacingMergeTree(ingested_at)',
     incremental_strategy='append',
-    partition_by='toYYYYMM(BOOKING_DATE)',
-    order_by='(BOOKING_DATE, BOOKING_ID)',
+    partition_by='toYYYYMM(assumeNotNull(BOOKING_DATE))',
+    order_by='(assumeNotNull(BOOKING_DATE), assumeNotNull(BOOKING_ID))',
     unique_key='BOOKING_ID'
 ) }}
 
@@ -15,9 +15,9 @@
 */
 
 SELECT
-    BOOKING_ID,
+    assumeNotNull(BOOKING_ID) AS BOOKING_ID,
     ITEM_CODE,
-    BOOKING_DATE,
+    assumeNotNull(BOOKING_DATE) AS BOOKING_DATE,
     WEIGHT_GRAM,
     MAIN_FEE,
     SUR_FEE,
@@ -48,7 +48,7 @@ SELECT
     STATUS_CODE,
     STATUS_NAME,
     STATUS_GROUP,
-    ingested_at,
+    assumeNotNull(ingested_at) AS ingested_at,
     now() AS olap_loaded_at
 FROM deltaLake(
     minio_gold, 

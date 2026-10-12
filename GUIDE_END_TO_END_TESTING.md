@@ -58,6 +58,7 @@ curl -X DELETE http://localhost:8083/connectors/oracle-logistics-dim-connector-v
 
 # 2. Xóa sạch dữ liệu cũ trong MinIO Bucket (để nạp mới)
 docker exec minio_lakehouse mc alias set myminio http://localhost:9000 minioadmin minioadminpassword
+docker exec minio_lakehouse mc mb myminio/logistics-lakehouse --ignore-existing
 docker exec minio_lakehouse mc rm --recursive --force myminio/logistics-lakehouse/bronze/
 docker exec minio_lakehouse mc rm --recursive --force myminio/logistics-lakehouse/silver/
 docker exec minio_lakehouse mc rm --recursive --force myminio/logistics-lakehouse/checkpoints/
@@ -87,6 +88,16 @@ cd cluster-1-ingestion && docker compose up -d && cd ..
 # Cluster 2 (Lakehouse & DWH)
 cd cluster-2-lakehouse-dwh && docker compose up -d && cd ..
 ```
+
+#### ⚠️ Lưu ý bắt buộc: Khởi tạo Bucket `logistics-lakehouse` trên MinIO
+Khi bạn vừa dựng mới cụm hoặc sau khi xóa trắng thư mục volume `/data/minio_data`, MinIO sẽ chưa có bucket. Bạn **bắt buộc phải tạo bucket `logistics-lakehouse`** trước khi chạy Spark (để tránh lỗi `NoSuchBucket - 404`):
+
+```bash
+# Tạo alias và tạo bucket (tự động bỏ qua nếu đã tồn tại)
+docker exec minio_lakehouse mc alias set myminio http://localhost:9000 minioadmin minioadminpassword
+docker exec minio_lakehouse mc mb myminio/logistics-lakehouse --ignore-existing
+```
+*(Hoặc vào giao diện Web UI tại `http://localhost:9001` với user `minioadmin` / `minioadminpassword` -> mục **Buckets** -> nhấn **Create Bucket** -> nhập `logistics-lakehouse`).*
 
 ---
 
@@ -138,7 +149,7 @@ DBeaver là công cụ GUI trực quan giúp kiểm tra dữ liệu trong Oracle
    - Khi hiện thông báo `Connected - Oracle Database 23ai Free ...` màu xanh là kết nối thành công.
 5. Nhấn **Finish** để hoàn tất.
 
-> 💡 **Mẹo**: Nếu muốn kết nối với user quản trị Container Database (CDB$ROOT), chọn Service Name là `FREE` (hoặc `ORCLCDB`), Username `sys`, Password `top_secret`, và chọn Role là `SYSDBA`.
+> 💡 **Mẹo**: Nếu muốn kết nối với user quản trị Container Database (CDB→ROOT), chọn Service Name là `FREE` (hoặc `ORCLCDB`), Username `sys`, Password `top_secret`, và chọn Role là `SYSDBA`.
 
 #### 2. Câu lệnh SQL kiểm tra dữ liệu nguồn:
 Mở một SQL Editor trong DBeaver trên kết nối vừa tạo và chạy các truy vấn sau:
@@ -174,6 +185,8 @@ FETCH FIRST 10 ROWS ONLY;
 ---
 
 ### BƯỚC 4: PySpark Batch Initial Bulk Load Nạp Bảng Lớn Vào Silver Layer
+
+> 💡 **Tiền điều kiện**: Đảm bảo bucket `logistics-lakehouse` đã được tạo trên MinIO ở BƯỚC 1 (`docker exec minio_lakehouse mc mb myminio/logistics-lakehouse --ignore-existing`). Nếu bucket chưa tồn tại, Spark sẽ báo lỗi `NoSuchBucket`.
 
 Chạy job Spark nạp toàn bộ dữ liệu lịch sử từ Oracle DB qua JDBC vào MinIO Silver Layer:
 
@@ -235,6 +248,26 @@ docker exec -it spark-runner spark-submit \
   /opt/bitnami/spark/spark_jobs/kafka_to_delta.py --once
 ```
 > 💡 *Nhờ tính năng `Trigger.AvailableNow` và cơ chế Checkpoint thông minh của Spark, job sẽ tự nhớ offset đã đọc, không bao giờ đọc trùng lặp hay sót dữ liệu. Rất lý tưởng khi chạy thử nghiệm trên máy local hoặc lên lịch định kỳ theo mẻ (Micro-batch) qua Airflow/Cron.*
+
+🔍 **Kiểm tra dữ liệu tầng Bronze từ ClickHouse (Zero-Copy Query)**:
+Sau khi Spark nạp dữ liệu vào Delta Lake, bạn có thể kiểm tra ngay tầng Bronze trực tiếp từ ClickHouse mà không cần copy dữ liệu:
+
+```bash
+# 1. Thống kê số lượng bản ghi CDC đã nạp vào Bronze theo từng bảng nguồn:
+docker exec -it clickhouse_dwh clickhouse-client -q \
+  "SELECT extract(_path, 'kafka_topic=([^/]+)') AS table_name, count() AS total_records, min(event_time) AS min_event_time, max(event_time) AS max_event_time FROM deltaLake(minio_bronze) GROUP BY table_name ORDER BY total_records DESC FORMAT PrettyCompact"
+
+# 2. Xem 5 bản ghi CDC Raw mới nhất (kèm op c/u/d, offset, partition và JSON payload):
+docker exec -it clickhouse_dwh clickhouse-client -q \
+  "SELECT extract(_path, 'kafka_topic=([^/]+)') AS table_name, op, kafka_offset, event_time, substring(raw_value, 1, 100) AS raw_sample FROM deltaLake(minio_bronze) ORDER BY kafka_offset DESC LIMIT 5 FORMAT PrettyCompact"
+
+# 3. Lọc riêng dữ liệu bảng SHIPMENT_BOOKINGS tầng Bronze:
+docker exec -it clickhouse_dwh clickhouse-client -q \
+  "SELECT op, kafka_partition, kafka_offset, event_time, substring(raw_value, 1, 120) AS raw_preview FROM deltaLake(minio_bronze) WHERE _path LIKE '%SHIPMENT_BOOKINGS%' ORDER BY kafka_offset DESC LIMIT 5 FORMAT PrettyCompact"
+```
+> 💡 **Lưu ý khi chạy trên Terminal vs DBeaver**:
+> - Trên **Terminal (`clickhouse-client`)**: Giữ `FORMAT PrettyCompact` để terminal in ra bảng ASCII căn lề đẹp mắt.
+> - Trên **DBeaver (hoặc GUI)**: **BỎ** phần `FORMAT PrettyCompact` ở cuối câu truy vấn. Driver JDBC của DBeaver tự quản lý format để render dữ liệu lên lưới (Grid). Nếu để `FORMAT PrettyCompact`, DBeaver sẽ báo lỗi: `Only RowBinaryWithNameAndTypes and JSONEachRow are supported for output format`.
 
 ---
 
@@ -315,7 +348,16 @@ docker exec -it spark-runner python3 /opt/bitnami/spark/spark_jobs/check_silver_
 ```
 *(Bảng ma trận kết quả sẽ hiển thị cột `VALUE COUNT` và `HIST ACTIVE (1)` đạt trạng thái `✅ KHỚP 100%` trên toàn bộ 11 bảng).*
 
-#### 2. Truy vấn trực tiếp dữ liệu tầng Silver bằng ClickHouse (Zero-Copy Query):
+#### 2. Truy vấn dữ liệu tầng Bronze (Raw Ingestion) bằng ClickHouse:
+Thống kê đối soát toàn bộ bản ghi raw CDC đã lưu trữ trên Delta Lake Bronze trước khi chạy qua ETL Silver:
+
+```bash
+# Thống kê phân bổ dữ liệu Bronze theo từng Topic / Bảng:
+docker exec -it clickhouse_dwh clickhouse-client -q \
+  "SELECT extract(_path, 'kafka_topic=([^/]+)') AS table_name, count() AS total_records FROM deltaLake(minio_bronze) GROUP BY table_name ORDER BY total_records DESC FORMAT PrettyCompact"
+```
+
+#### 3. Truy vấn trực tiếp dữ liệu tầng Silver bằng ClickHouse (Zero-Copy Query):
 Truy vấn trực tiếp dữ liệu tầng Silver trên MinIO S3 thông qua ClickHouse mà không cần copy dữ liệu:
 
 ```bash
@@ -331,6 +373,77 @@ docker exec -it clickhouse_dwh clickhouse-client -q   "SELECT BOOKING_ID, STATUS
 
 ---
 
+### BƯỚC 10: Vận Hành & Thông Luồng Cụm 3 (Airflow Orchestrator + dbt Transform Mesh qua SSHOperator)
+
+Cụm 3 đóng vai trò điều phối (Data Orchestration) và chuyển đổi dữ liệu phân tích (Transformations & Modeling) chuẩn kiến trúc Production:
+- **Kiến trúc An toàn Production**: Airflow cách ly hoàn toàn môi trường, **không mount `docker.sock`**. Mọi Spark Job nặng được điều phối từ xa qua **`SSHOperator`** tới cụm Spark (`spark_ssh_conn`: `spark-runner:22`).
+- **Giám sát thời gian thực**: Toàn bộ `stdout` / `stderr` từ `spark-submit` được stream trực tiếp về Airflow Task Logs. Đồng thời Application ID hiển thị rõ ràng để theo dõi trên Spark Master UI (`http://localhost:8081`).
+- **Tầng Lakehouse (`dbt-spark`)**: Đọc từ MinIO Silver (`silver/value_*`) → Pre-join OBT (One Big Table) và làm sạch → Ghi vào MinIO Gold Delta (`gold/datamart/obt_shipment_analytics/`). Spark Thrift Server (cổng 10000) tự động chạy ở chế độ local engine với cấu hình Delta Lake & S3, bảo toàn 100% cores cho cụm Worker.
+- **Tầng Data Warehouse (`dbt-clickhouse`)**: Nạp gia tăng (Incremental) từ S3 Gold vào bảng ClickHouse OLAP siêu tốc `default.obt_shipment_analytics` qua bảng đệm `ReplacingMergeTree` → Sẵn sàng cho Cube.js & Apache Superset phục vụ BI Dashboard.
+
+#### 1. Khởi động Cụm 3 (Airflow PostgreSQL Metadata + Airflow Orchestrator):
+> [!NOTE]
+> Spark HiveThriftServer2 (cổng 10000) và OpenSSH Daemon (cổng 22) đã được tích hợp tự động 100% trong `cluster-2-lakehouse-dwh/entrypoint.sh`. Bạn **không cần phải chạy lệnh `docker exec` thủ công nào để bật Thrift Server**.
+
+```bash
+# 1. Đảm bảo Cụm 2 đang hoạt động (Spark Master, Worker, MinIO, ClickHouse):
+cd cluster-2-lakehouse-dwh && docker compose up -d && cd ..
+
+# 2. Khởi chạy Cụm 3 (PostgreSQL 15 Metadata DB + Airflow Orchestrator):
+cd cluster-3-dbt-airflow && docker compose up -d && cd ..
+```
+* **Web UI Airflow**: `http://localhost:8085`
+* **Tài khoản cố định tự động**: `admin` / `admin` *(tự động khởi tạo cố định khi container khởi chạy, không bao giờ bị mất)*.
+* **Tự động cấu hình SSH Connection**: `spark_ssh_conn` (`ssh://spark:spark@spark-runner:22`) được khởi tạo tự động trong metadata Airflow.
+
+#### 2. Kiểm tra thông suốt dịch vụ (Health Check):
+```bash
+# 1. Kiểm tra kết nối SSH từ Airflow sang Spark:
+docker exec -it airflow_orchestrator python -c "from airflow.providers.ssh.hooks.ssh import SSHHook; hook = SSHHook(ssh_conn_id='spark_ssh_conn'); client = hook.get_conn(); print('✅ SSH Connected to:', client.get_transport().getpeername())"
+
+# 2. Kiểm thử thông suốt kết nối dbt Spark (cổng 10000):
+docker exec -it airflow_orchestrator dbt debug --project-dir /opt/airflow/dbt_lakehouse_spark --profiles-dir /opt/airflow/dbt_lakehouse_spark
+
+# 3. Kiểm thử thông suốt kết nối dbt ClickHouse (cổng 8123):
+docker exec -it airflow_orchestrator dbt debug --project-dir /opt/airflow/dbt_warehouse_clickhouse --profiles-dir /opt/airflow/dbt_warehouse_clickhouse
+```
+*(Tất cả lệnh đều trả về `All checks passed!` và `Connection test: [OK connection ok]`).*
+
+#### 3. Kích hoạt Pipeline End-to-End:
+
+##### Lựa chọn A: Kích hoạt tự động qua Airflow Web UI:
+1. Mở trình duyệt vào `http://localhost:8085` → Đăng nhập với tài khoản `admin` / `admin`.
+2. Bật toggle **`ON`** cho DAG: **`e2e_logistics_data_pipeline`**.
+3. **Lưu ý quan trọng khi Cụm 1 (Oracle) đang tắt để tiết kiệm RAM**:
+   * Nhấn chuột vào task đầu tiên `spark_oracle_bulk_initial_load` → Chọn **Mark State as Success** (để bỏ qua do dữ liệu lịch sử đã nạp ở Bước 4).
+   * Airflow sẽ tự động điều phối chạy tiếp các task trong chuỗi:
+     `spark_bronze_to_silver_medallion` (SSH) → `dbt_spark_lakehouse_run` → `dbt_clickhouse_warehouse_run` → `dbt_clickhouse_test`.
+   * Click vào task bất kỳ và chọn **Log** để xem tiến độ streaming theo thời gian thực.
+
+##### Lựa chọn B: Thực thi kiểm thử từng lệnh qua CLI (Nghiệm thu độc lập):
+```bash
+# 1. Chạy Medallion Bronze -> Silver qua SSHOperator:
+docker exec -it airflow_orchestrator airflow tasks test e2e_logistics_data_pipeline spark_bronze_to_silver_medallion 2026-01-01
+
+# 2. Biến đổi dữ liệu Silver sang Gold OBT bằng dbt Spark (qua ThriftServer 10000):
+docker exec -it airflow_orchestrator dbt run --project-dir /opt/airflow/dbt_lakehouse_spark --profiles-dir /opt/airflow/dbt_lakehouse_spark
+
+# 3. Nạp dữ liệu Gold OBT vào ClickHouse DWH bằng dbt ClickHouse:
+docker exec -it airflow_orchestrator dbt run --project-dir /opt/airflow/dbt_warehouse_clickhouse --profiles-dir /opt/airflow/dbt_warehouse_clickhouse
+```
+
+#### 4. Nghiệm thu dữ liệu Gold Data Mart trên ClickHouse:
+Truy vấn bảng OBT Data Mart đã được vật lý hóa vào ClickHouse:
+```bash
+docker exec -it clickhouse_dwh clickhouse-client -q   "SELECT count() AS total_obt, countDistinct(CUSTOMER_ID) AS unique_customers, sum(TOTAL_REVENUE) AS total_revenue, sum(PROFIT_AMOUNT) AS total_profit FROM default.obt_shipment_analytics FORMAT PrettyCompact"
+```
+*Kết quả mẫu đạt chuẩn:*
+```text
+┌─total_obt─┬─unique_customers─┬─────total_revenue─┬───────total_profit─┐
+│     50101 │              200 │ 7196612636.749999 │ 2519660794.1200004 │
+└───────────┴──────────────────┴───────────────────┴────────────────────┘
+```
+
 ## 🎯 BẢNG TỔNG KẾT KIỂM THỬ THÀNH CÔNG
 
 | Hạng mục kiểm thử | Tiêu chuẩn thành công | Kết quả thực tế |
@@ -340,5 +453,9 @@ docker exec -it clickhouse_dwh clickhouse-client -q   "SELECT BOOKING_ID, STATUS
 | **Initial Bulk Load** | Toàn bộ dữ liệu lịch sử từ Oracle vào Silver Layer trong < 2 phút | ✅ ĐẠT |
 | **CDC Capture** | Debezium bắt đầy đủ INSERT, UPDATE, DELETE vào Kafka | ✅ ĐẠT |
 | **Bronze Streaming** | Spark Streaming ghi Append-Only vào MinIO Delta với Checkpoint | ✅ ĐẠT |
+| **Bronze ClickHouse Inspection** | Truy vấn trực tiếp Delta Lake Bronze từ ClickHouse phân nhóm theo Topic | ✅ ĐẠT |
 | **Silver Medallion** | Tự động Dedup, MERGE INTO và quản lý SCD Type 2 | ✅ ĐẠT |
 | **ClickHouse Serving** | Truy vấn trực tiếp Delta Lake trên S3 với tốc độ mili-giây | ✅ ĐẠT |
+| **Airflow Orchestrator** | Giao diện Web UI Port 8085 hoạt động với tài khoản cố định admin/admin | ✅ ĐẠT |
+| **dbt Spark Gold Mart** | Pre-join Silver tạo Gold OBT Delta Lake qua Spark Thrift Server | ✅ ĐẠT |
+| **dbt ClickHouse DWH** | Materialize OBT Incremental vào ClickHouse & Pass Quality Tests | ✅ ĐẠT |

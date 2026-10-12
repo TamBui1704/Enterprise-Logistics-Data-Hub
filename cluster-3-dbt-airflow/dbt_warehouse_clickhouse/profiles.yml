@@ -4,7 +4,7 @@ dbt_warehouse_clickhouse:
     dev:
       type: clickhouse
       driver: http
-      host: clickhouse_server
+      host: clickhouse_dwh
       port: 8123
       user: default
       password: ""

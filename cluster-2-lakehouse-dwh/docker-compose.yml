@@ -44,7 +44,11 @@ services:
         limits:
           memory: 1024M
     networks:
-      - logistics_net
+      logistics_net:
+        aliases:
+          - clickhouse_server
+          - clickhouse_dwh
+          - clickhouse
 
   # -------------------------------------------------------------------
   # 3. Apache Spark / PySpark Runner (Xử lý Batch Initial Load & Streaming Delta)
@@ -60,14 +64,19 @@ services:
       - "8081:8080"   # Spark Master Web UI
       - "7077:7077"   # Spark Master Port
       - "4040:4040"   # Spark Application UI
+      - "10000:10000" # Spark HiveThriftServer2 (dbt / BI)
+      - "2222:22"     # SSH Server (Airflow / Remote Dev)
     volumes:
       - ./spark_jobs:/opt/bitnami/spark/spark_jobs
     deploy:
       resources:
         limits:
-          memory: 1536M
+          memory: 2048M
     networks:
-      - logistics_net
+      logistics_net:
+        aliases:
+          - spark-runner
+          - spark_runner
 
   pyspark-worker:
     build: .
@@ -85,7 +94,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1536M
+          memory: 2048M
     networks:
       - logistics_net
 

@@ -7,7 +7,7 @@ Sử dụng khi khởi tạo dữ liệu ban đầu trước khi bật Debezium 
 
 import os
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import current_timestamp, lit
+from pyspark.sql.functions import current_timestamp, lit, col, to_utc_timestamp
 import time
 
 def build_spark_session():
@@ -57,6 +57,11 @@ def main():
             table=f"DEBEZIUM.{table.upper()}",
             properties=connection_properties
         )
+
+        # Tự động chuẩn hóa các cột Timestamp từ múi giờ local Oracle (UTC+7) về chuẩn UTC của Delta Lake
+        for c, t in oracle_df.dtypes:
+            if t == "timestamp":
+                oracle_df = oracle_df.withColumn(c, to_utc_timestamp(col(c), "Asia/Ho_Chi_Minh"))
 
         record_count = oracle_df.count()
 

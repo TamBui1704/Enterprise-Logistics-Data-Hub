@@ -26,7 +26,7 @@ services:
       test: ["CMD-SHELL", "healthcheck.sh"]
       interval: 10s
       timeout: 5s
-      retries: 25
+      retries: 40
       start_period: 40s
     networks:
       - logistics_net
@@ -67,7 +67,8 @@ services:
       test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 30s
     networks:
       - logistics_net
 

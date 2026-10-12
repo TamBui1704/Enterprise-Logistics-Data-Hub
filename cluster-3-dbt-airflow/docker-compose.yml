@@ -2,26 +2,61 @@ version: '3.8'
 
 services:
   # -------------------------------------------------------------------
-  # Apache Airflow Orchestrator & dbt Runner (Cluster 3)
+  # 1. Metadata Database: PostgreSQL (Phục vụ LocalExecutor & Concurrency)
+  # -------------------------------------------------------------------
+  postgres:
+    image: postgres:15-alpine
+    container_name: airflow_postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - ${AIRFLOW_PG_DATA_VOLUME:-airflow_pgdata}:/var/lib/postgresql/data
+    networks:
+      - logistics_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # -------------------------------------------------------------------
+  # 2. Apache Airflow Orchestrator & dbt Runner (Cluster 3)
   # -------------------------------------------------------------------
   airflow:
     build: .
     image: custom-airflow-dbt:2.8.1
     container_name: airflow_orchestrator
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
-      - AIRFLOW__CORE__EXECUTOR=SequentialExecutor
-      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=sqlite:////opt/airflow/airflow.db
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
       - AIRFLOW__WEBSERVER__SECRET_KEY=logistics_secret_key
       - DBT_PROFILES_DIR=/opt/airflow/dbt_logistics
+      - AIRFLOW_CONN_SPARK_SSH_CONN=ssh://spark:spark@spark-runner:22
     ports:
       - "8085:8080"   # Airflow Web UI
     volumes:
       - ./dags:/opt/airflow/dags
       - ./dbt_lakehouse_spark:/opt/airflow/dbt_lakehouse_spark
       - ./dbt_warehouse_clickhouse:/opt/airflow/dbt_warehouse_clickhouse
-      - /var/run/docker.sock:/var/run/docker.sock # Cho phép Airflow trigger Docker container
-    command: standalone
+    command: >
+      bash -c "
+        airflow db migrate &&
+        (airflow users create -u admin -p admin -f Admin -l User -r Admin -e admin@example.com 2>/dev/null || true) &&
+        (airflow connections add spark_ssh_conn --conn-type ssh --conn-host spark-runner --conn-port 22 --conn-login spark --conn-password spark 2>/dev/null || true) &&
+        echo 'admin' > /opt/airflow/standalone_admin_password.txt &&
+        exec airflow standalone
+      "
     deploy:
       resources:
         limits:
@@ -32,3 +67,6 @@ services:
 networks:
   logistics_net:
     name: logistics_net
+
+volumes:
+  airflow_pgdata:

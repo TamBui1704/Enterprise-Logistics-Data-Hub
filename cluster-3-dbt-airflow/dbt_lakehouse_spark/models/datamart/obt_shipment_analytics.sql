@@ -2,7 +2,6 @@
     materialized='incremental',
     incremental_strategy='merge',
     unique_key='BOOKING_ID',
-    partition_by=['BOOKING_DATE']
 ) }}
 
 /*

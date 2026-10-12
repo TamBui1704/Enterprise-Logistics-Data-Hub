@@ -1,5 +1,10 @@
 <clickhouse>
     <named_collections>
+        <minio_bronze>
+            <url>http://minio-lakehouse:9000/logistics-lakehouse/bronze/all_tables/</url>
+            <access_key_id>minioadmin</access_key_id>
+            <secret_access_key>minioadminpassword</secret_access_key>
+        </minio_bronze>
         <minio_silver>
             <url>http://minio-lakehouse:9000/logistics-lakehouse/silver/</url>
             <access_key_id>minioadmin</access_key_id>
