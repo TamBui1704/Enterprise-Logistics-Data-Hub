@@ -2,22 +2,6 @@ cubes:
   - name: Shipments
     sql: SELECT * FROM default.obt_shipment_analytics
 
-    # LUẬT RLS (ROW LEVEL SECURITY) TẠI TẦNG CUBE
-    # Tự động chèn câu lệnh WHERE lọc theo tỉnh thành dựa trên securityContext lấy từ ClickHouse + Keycloak
-    query_rewrite:
-      - name: enforce_rls
-        sql: |
-          {% if COMPILE_CONTEXT.securityContext.province_access contains 'ALL' or COMPILE_CONTEXT.securityContext.role == 'ADMIN' %}
-            ${COMPILE_CONTEXT.sql}
-          {% else %}
-            SELECT * FROM (${COMPILE_CONTEXT.sql}) AS rls_tbl 
-            WHERE rls_tbl.SENDING_PROVINCE IN (
-              {% for p in COMPILE_CONTEXT.securityContext.province_access %}
-                '{{ p }}'{% if not loop.last %},{% endif %}
-              {% endfor %}
-            )
-          {% endif %}
-
     # 1. MEASURES (Các chỉ số đo lường)
     measures:
       - name: totalBookings
@@ -63,18 +47,3 @@ cubes:
         sql: STATUS_NAME
         type: string
         title: Trạng Thái Đơn
-
-    # 3. PRE-AGGREGATIONS (Tối ưu hóa)
-    # pre_aggregations:
-    #   - name: revenueByProvinceAndDate
-    #     measures:
-    #       - totalRevenue
-    #       - totalBookings
-    #     dimensions:
-    #       - sendingProvince
-    #       - statusName
-    #     time_dimension: bookingDate
-    #     granularity: day
-    #     partition_granularity: month
-    #     refresh_key:
-    #       every: 1 hour

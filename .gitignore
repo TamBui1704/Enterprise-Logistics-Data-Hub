@@ -50,3 +50,8 @@ logs/
 *.swo
 .DS_Store
 
+
+# Cube.js cache & metastore
+.cubestore/
+**/.cubestore/
+

@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # -------------------------------------------------------------------
   # 1. Cube.dev (Semantic Metrics Layer - Quản lý chỉ số Logistics tập trung)
@@ -39,6 +37,8 @@ services:
       - "8088:8088"
     environment:
       SUPERSET_SECRET_KEY: "logistics_superset_secret_key"
+    volumes:
+      - superset_home:/app/superset_home
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -46,4 +46,7 @@ services:
 
 networks:
   logistics_net:
-    name: logistics_net
+    external: true
+
+volumes:
+  superset_home:

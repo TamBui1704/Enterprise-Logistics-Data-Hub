@@ -444,6 +444,76 @@ docker exec -it clickhouse_dwh clickhouse-client -q   "SELECT count() AS total_o
 └───────────┴──────────────────┴───────────────────┴────────────────────┘
 ```
 
+
+### BƯỚC 11: Vận Hành & Thông Luồng Cụm 4 (Cube.dev Metrics Layer + Apache Superset BI)
+
+#### 1. Khởi động Cụm 4 (Cube Semantic Layer + Apache Superset):
+```bash
+cd cluster-4-bi && docker compose up -d
+```
+* **Cube Developer Playground & REST API**: `http://localhost:4000`
+* **Apache Superset BI**: `http://localhost:8088` (Tài khoản: `admin` / `admin`)
+* **Cube SQL API (PostgreSQL Wire Protocol)**: Cổng `15432` (trên máy host) hoặc `cube_semantic_layer:5432` (trong docker network).
+
+#### 2. Khởi tạo Ma Trận Phân Quyền Dữ Liệu trên ClickHouse (`dim_user_permissions`):
+```bash
+docker exec -it clickhouse_dwh clickhouse-client -q "
+CREATE TABLE IF NOT EXISTS default.dim_user_permissions (
+    username String,
+    role String,
+    province_access Array(String),
+    updated_at DateTime DEFAULT now()
+) ENGINE = MergeTree()
+ORDER BY username;
+
+INSERT INTO default.dim_user_permissions (username, role, province_access) VALUES 
+('admin@logistics.com', 'ADMIN', ['ALL']),
+('admin', 'ADMIN', ['ALL']),
+('manager_south', 'REGIONAL_MANAGER', ['Hồ Chí Minh', 'Đồng Nai', 'Bình Dương']),
+('manager_north', 'REGIONAL_MANAGER', ['Hà Nội', 'Hải Phòng', 'Bắc Ninh']),
+('driver_hcm_01', 'DRIVER', ['Hồ Chí Minh']);
+"
+```
+
+#### 3. Kiểm thử Cube REST API & Phân Quyền Dòng Động (Dynamic RLS):
+##### A. Kiểm tra quyền Admin (Toàn quốc - Không lọc):
+```bash
+curl -s -X POST http://localhost:4000/cubejs-api/v1/load \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOiJub25lIn0.eyJwcmVmZXJyZWRfdXNlcm5hbWUiOiJhZG1pbiJ9." \
+  -d '{"query": {"measures": ["Shipments.totalBookings", "Shipments.totalRevenue"]}}' | jq .data
+```
+*Kết quả:* Tổng đơn hàng `50101`, doanh thu ~`7.19 tỷ VND` trên toàn quốc.
+
+##### B. Kiểm tra quyền Regional Manager Miền Nam (Tự động lọc RLS):
+```bash
+curl -s -X POST http://localhost:4000/cubejs-api/v1/load \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOiJub25lIn0.eyJwcmVmZXJyZWRfdXNlcm5hbWUiOiJtYW5hZ2VyX3NvdXRoIn0." \
+  -d '{"query": {"measures": ["Shipments.totalBookings"], "dimensions": ["Shipments.sendingProvince"]}}' | jq .data
+```
+*Kết quả:* Cube tự động lọc chỉ trả về dữ liệu tại 2 tỉnh **Đồng Nai (5,956 đơn)** và **Hồ Chí Minh (5,313 đơn)**.
+
+#### 4. Kiểm thử Cube SQL API từ Superset (PostgreSQL Wire Protocol):
+Kiểm tra kết nối và truy vấn trực tiếp từ container Superset:
+```bash
+# Kiểm tra quyền Regional Manager qua cổng Postgres 5432:
+docker exec -it superset_bi python3 -c "
+import psycopg2
+conn = psycopg2.connect(host='cube_semantic_layer', port=5432, user='manager_south', password='any', dbname='default')
+cur = conn.cursor()
+cur.execute('SELECT sendingProvince, totalBookings FROM Shipments')
+for row in cur.fetchall():
+    print('  ', row)
+conn.close()
+"
+```
+*Kết quả hiển thị chính xác 2 tỉnh miền Nam:*
+```text
+   ('Đồng Nai', 5956)
+   ('Hồ Chí Minh', 5313)
+```
+
 ## 🎯 BẢNG TỔNG KẾT KIỂM THỬ THÀNH CÔNG
 
 | Hạng mục kiểm thử | Tiêu chuẩn thành công | Kết quả thực tế |
@@ -459,3 +529,6 @@ docker exec -it clickhouse_dwh clickhouse-client -q   "SELECT count() AS total_o
 | **Airflow Orchestrator** | Giao diện Web UI Port 8085 hoạt động với tài khoản cố định admin/admin | ✅ ĐẠT |
 | **dbt Spark Gold Mart** | Pre-join Silver tạo Gold OBT Delta Lake qua Spark Thrift Server | ✅ ĐẠT |
 | **dbt ClickHouse DWH** | Materialize OBT Incremental vào ClickHouse & Pass Quality Tests | ✅ ĐẠT |
+| **Cube Semantic Layer** | Quản lý Metrics tập trung, Multi-API (REST/SQL API), Cube Store Cache | ✅ ĐẠT |
+| **Dynamic RLS Security** | Tự động lọc phân quyền dòng dữ liệu theo vùng miền từ ClickHouse matrix | ✅ ĐẠT |
+| **Apache Superset BI** | Trực quan hóa Dashboard qua cổng PostgreSQL Wire Protocol cổng 5432 | ✅ ĐẠT |

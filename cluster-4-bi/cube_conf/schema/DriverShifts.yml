@@ -2,21 +2,6 @@ cubes:
   - name: DriverShifts
     sql: SELECT * FROM default.obt_driver_shifts
 
-    # LUẬT RLS (ROW LEVEL SECURITY) TẠI TẦNG CUBE
-    query_rewrite:
-      - name: enforce_rls
-        sql: |
-          {% if COMPILE_CONTEXT.securityContext.province_access contains 'ALL' or COMPILE_CONTEXT.securityContext.role == 'ADMIN' %}
-            ${COMPILE_CONTEXT.sql}
-          {% else %}
-            SELECT * FROM (${COMPILE_CONTEXT.sql}) AS rls_tbl 
-            WHERE rls_tbl.SENDING_PROVINCE IN (
-              {% for p in COMPILE_CONTEXT.securityContext.province_access %}
-                '{{ p }}'{% if not loop.last %},{% endif %}
-              {% endfor %}
-            )
-          {% endif %}
-
     measures:
       - name: totalShifts
         type: count
@@ -48,17 +33,3 @@ cubes:
         sql: SENDING_PROVINCE
         type: string
         title: Tỉnh Xuất Phát
-
-    pre_aggregations:
-      - name: distanceByDriverAndDate
-        measures:
-          - totalDistanceKm
-          - totalShifts
-        dimensions:
-          - driverName
-          - sendingProvince
-        time_dimension: shiftDate
-        granularity: day
-        partition_granularity: month
-        refresh_key:
-          every: 1 hour
