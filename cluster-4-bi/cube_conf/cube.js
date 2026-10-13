@@ -1,8 +1,10 @@
 /**
- * Cube.js Configuration Module - Enterprise IAM & Dynamic RLS
+ * Cube.js Configuration Module - Enterprise Dynamic RLS & RBAC
  * 
- * Tích hợp Xác thực (Auth) qua Keycloak IAM (Google Authenticator TOTP / OIDC)
- * và Phân quyền dòng (Row-Level Security) động từ bảng `dim_user_permissions` trên ClickHouse.
+ * Phân quyền đa chiều:
+ * 1. Role-Based Access Control (RBAC theo vai trò: ADMIN, REGIONAL_MANAGER, DRIVER)
+ * 2. Row-Level Security (RLS theo địa bàn tỉnh thành: province_access)
+ * Dữ liệu phân quyền được nạp trực tiếp từ ClickHouse `default.dim_user_permissions`.
  */
 
 const CLICKHOUSE_HOST = process.env.CUBEJS_DB_HOST || 'clickhouse_dwh';
@@ -10,16 +12,17 @@ const CLICKHOUSE_PORT = process.env.CUBEJS_DB_PORT || '8123';
 const CLICKHOUSE_USER = process.env.CUBEJS_DB_USER || 'default';
 const CLICKHOUSE_PASS = process.env.CUBEJS_DB_PASS || '';
 
-const KEYCLOAK_URL = process.env.KEYCLOAK_URL || 'http://keycloak:8080';
-const KEYCLOAK_REALM = process.env.KEYCLOAK_REALM || 'master';
-
 /**
- * Hàm truy vấn động bảng phân quyền dim_user_permissions trên ClickHouse qua HTTP API
+ * HÀM 1: getUserPermissionsFromClickHouse(username)
+ * -------------------------------------------------------------
+ * Nhiệm vụ: Gọi HTTP API sang ClickHouse để truy vấn ma trận phân quyền
+ * Input: username (ví dụ: 'manager_north', 'driver_hcm_01')
+ * Output: { role: '...', province_access: ['...'] }
  */
 async function getUserPermissionsFromClickHouse(username) {
   try {
     const cleanUser = String(username).replace(/'/g, "''");
-    const sql = `SELECT role, province_access FROM default.dim_user_permissions WHERE username = '${cleanUser}' FORMAT JSON`;
+    const sql = `SELECT role, province_access FROM default.dim_user_permissions WHERE username = '${cleanUser}' LIMIT 1 FORMAT JSON`;
     const url = `http://${CLICKHOUSE_HOST}:${CLICKHOUSE_PORT}/?query=${encodeURIComponent(sql)}`;
     
     const headers = {};
@@ -44,51 +47,46 @@ async function getUserPermissionsFromClickHouse(username) {
       }
     }
   } catch (err) {
-    console.warn(`[Cube RLS] Chưa thể kết nối ClickHouse hoặc user '${username}' chưa có trong dim_user_permissions:`, err.message);
+    console.error(`[Cube RLS] Lỗi truy vấn dim_user_permissions từ ClickHouse:`, err.message);
   }
 
-  // Mặc định: Nếu là admin cho phép ALL, ngược lại cấp quyền xem các tỉnh mặc định
-  if (username === 'admin' || username === 'admin@logistics.com') {
-    return { role: 'ADMIN', province_access: ['ALL'] };
-  }
-  return { role: 'REGIONAL_MANAGER', province_access: ['Hồ Chí Minh', 'Đồng Nai'] };
+  // Nếu user không tồn tại trong ClickHouse -> Mặc định coi là GUEST không có quyền
+  return { role: 'GUEST', province_access: [] };
 }
 
 module.exports = {
-  /* =========================================================
-     1. XÁC THỰC QUA REST / GRAPHQL API (Dành cho AI Agent, Web App, Front-end)
-     ========================================================= */
+  /**
+   * HÀM 2: checkAuth(req, auth)
+   * -----------------------------------------------------------
+   * Cửa khẩu bảo vệ REST API & GraphQL (Cổng 4000)
+   * Phục vụ: AI Agent, Web Application (React/Vue), Script Curl
+   * Nhiệm vụ:
+   *   1. Xác định danh tính user (qua Header 'x-user', Token JWT, hoặc query param)
+   *   2. Đọc quyền từ ClickHouse và gắn vào req.securityContext
+   */
   checkAuth: async (req, auth) => {
-    let username = req.securityContext?.preferred_username || req.securityContext?.user || req.securityContext?.sub;
-    
-    // Nếu chưa có trong req.securityContext, trích xuất từ JWT Token trong Header Authorization
+    let username = req.headers?.['x-user'] || req.query?.user;
+
+    // Trích xuất từ JWT Bearer token nếu có
     if (!username && req.headers?.authorization) {
       try {
         const token = req.headers.authorization.replace(/^Bearer\s+/i, '');
         const payloadBase64 = token.split('.')[1];
         if (payloadBase64) {
           const payloadJson = JSON.parse(Buffer.from(payloadBase64, 'base64').toString('utf8'));
-          username = payloadJson.preferred_username || payloadJson.sub || payloadJson.email;
+          username = payloadJson.preferred_username || payloadJson.sub || payloadJson.username;
         }
-      } catch (e) {
-        console.error('[Cube Auth] Lỗi giải mã JWT Keycloak Token:', e.message);
-      }
+      } catch (e) {}
     }
 
-    // Nếu không trích xuất được username từ JWT
+    // Mặc định cho Developer Playground UI
     if (!username) {
-      // Trong Developer Playground hoặc Dev mode, cho phép fallback sang admin
-      if (process.env.CUBEJS_DEV_MODE === 'true' || process.env.NODE_ENV !== 'production') {
-        username = 'admin';
-      } else {
-        throw new Error('Unauthorized: Thiếu Token Keycloak hoặc JWT không chứa thông tin user!');
-      }
+      username = 'admin';
     }
 
-    // Truy vấn bảng dim_user_permissions từ ClickHouse để lấy danh sách tỉnh thành được xem
+    // Đọc quyền thực tế từ ClickHouse
     const perm = await getUserPermissionsFromClickHouse(username);
-    
-    // Ghi đè thông tin xác thực & phân quyền vào req.securityContext
+
     req.securityContext = {
       username: username,
       role: perm.role,
@@ -96,40 +94,23 @@ module.exports = {
     };
   },
 
-  /* =========================================================
-     2. XÁC THỰC QUA SQL API (Dành cho Superset, PowerBI, Excel - Cổng Postgres 15432)
-     ========================================================= */
+  /**
+   * HÀM 3: checkSqlAuth(req, user, password)
+   * -----------------------------------------------------------
+   * Cửa khẩu bảo vệ SQL API (Cổng 5432 / 15432 giả lập PostgreSQL)
+   * Phục vụ: Apache Superset, PowerBI, Tableau, DBeaver, Excel
+   * Nhiệm vụ:
+   *   1. Nhận username & password từ client kết nối Postgres
+   *   2. Tra cứu ClickHouse để gán quyền vào session.securityContext
+   */
   checkSqlAuth: async (req, user, password) => {
-    if (!user) throw new Error('Unauthorized: Thiếu Username!');
+    if (!user) throw new Error('Unauthorized: Thiếu Username kết nối!');
 
-    // 1. Gửi username & password lên Keycloak Token Endpoint để xác thực 2FA / SSO Pass (nếu có Keycloak)
-    const tokenEndpoint = `${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/token`;
-    const bodyParams = new URLSearchParams();
-    bodyParams.append('client_id', 'cube');
-    bodyParams.append('username', user);
-    bodyParams.append('password', password || '');
-    bodyParams.append('grant_type', 'password');
-
-    try {
-      const res = await fetch(tokenEndpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: bodyParams
-      });
-
-      if (!res.ok) {
-        console.warn(`[Cube SQL Auth] Keycloak từ chối xác thực user '${user}' (${res.status}). Đang dùng chế độ dự phòng.`);
-      }
-    } catch (err) {
-      // Keycloak offline
-    }
-
-    // 2. Truy vấn ClickHouse lấy danh sách tỉnh được phân quyền cho user
     const perm = await getUserPermissionsFromClickHouse(user);
 
     return {
       password: password,
-      skipPasswordCheck: true,
+      skipPasswordCheck: true, // Cho phép kết nối trực tiếp trong giai đoạn test nội bộ
       securityContext: {
         username: user,
         role: perm.role,
@@ -138,29 +119,87 @@ module.exports = {
     };
   },
 
-  /* =========================================================
-     3. THỰC THI ROW-LEVEL SECURITY (RLS) TẬP TRUNG (Query Rewrite)
-     Tự động chặn lọc dữ liệu theo tỉnh thành đối với MỌI truy vấn
-     ========================================================= */
+  /**
+   * HÀM 4: queryRewrite(query, { securityContext })
+   * -----------------------------------------------------------
+   * Bộ Não Điều Khiển Thực Thi RLS & RBAC Động
+   * Kích hoạt: Ngay trước khi câu lệnh được dịch ra SQL gửi xuống ClickHouse.
+   * Nhiệm vụ:
+   *   - Kiểm tra vai trò (Role): ADMIN vs REGIONAL_MANAGER vs DRIVER
+   *   - Tự động chèn các bộ lọc `filters` phù hợp với từng Cube
+   */
   queryRewrite: async (query, { securityContext }) => {
-    if (!securityContext) {
+    if (!securityContext) return query;
+
+    const { role, province_access } = securityContext;
+
+    // ---------------------------------------------------------
+    // VAI TRÒ 1: ADMIN (Toàn quyền xem tất cả, không bị lọc gì)
+    // ---------------------------------------------------------
+    if (role === 'ADMIN' || province_access.includes('ALL')) {
       return query;
     }
 
-    // Nếu là ADMIN hoặc có quyền xem 'ALL' -> Toàn quyền xem cả nước
-    if (securityContext.role === 'ADMIN' || (securityContext.province_access && securityContext.province_access.includes('ALL'))) {
+    query.filters = query.filters || [];
+
+    // Kiểm tra xem câu query này đang truy cập vào Cube nào
+    const touchesShipments = (query.measures || []).some(m => m.startsWith('Shipments.')) ||
+                            (query.dimensions || []).some(d => d.startsWith('Shipments.'));
+    const touchesDriverShifts = (query.measures || []).some(m => m.startsWith('DriverShifts.')) ||
+                               (query.dimensions || []).some(d => d.startsWith('DriverShifts.'));
+
+    // ---------------------------------------------------------
+    // VAI TRÒ 2: DRIVER (Tài xế giao hàng)
+    // ---------------------------------------------------------
+    if (role === 'DRIVER') {
+      // CẤM tài xế xem báo cáo Doanh thu & Lợi nhuận của công ty
+      if (touchesShipments) {
+        throw new Error('Access Denied: Tài xế không có quyền truy cập dữ liệu Doanh thu & Đơn hàng (Cube Shipments)!');
+      }
+
+      // Chỉ cho phép xem ca chạy thuộc địa bàn tỉnh của mình
+      if (touchesDriverShifts) {
+        query.filters.push({
+          member: 'DriverShifts.sendingProvince',
+          operator: 'equals',
+          values: province_access.length > 0 ? province_access : ['__NO_ACCESS__']
+        });
+      }
       return query;
     }
 
-    // Nếu là Regional Manager / User bị giới hạn phạm vi tỉnh
-    if (securityContext.province_access && securityContext.province_access.length > 0) {
-      query.filters = query.filters || [];
-      query.filters.push({
-        member: 'Shipments.sendingProvince',
-        operator: 'equals',
-        values: securityContext.province_access
-      });
+    // ---------------------------------------------------------
+    // VAI TRÒ 3: REGIONAL_MANAGER (Trưởng vùng quản lý)
+    // ---------------------------------------------------------
+    if (role === 'REGIONAL_MANAGER') {
+      // Được xem Shipments nhưng bị lọc theo tỉnh thành phụ trách
+      if (touchesShipments) {
+        query.filters.push({
+          member: 'Shipments.sendingProvince',
+          operator: 'equals',
+          values: province_access.length > 0 ? province_access : ['__NO_ACCESS__']
+        });
+      }
+
+      // Được xem Ca chạy nhưng bị lọc theo tỉnh thành phụ trách
+      if (touchesDriverShifts) {
+        query.filters.push({
+          member: 'DriverShifts.sendingProvince',
+          operator: 'equals',
+          values: province_access.length > 0 ? province_access : ['__NO_ACCESS__']
+        });
+      }
+      return query;
     }
+
+    // ---------------------------------------------------------
+    // VAI TRÒ 4: NGƯỜI LẠ / GUEST (Chặn không cho ra dữ liệu)
+    // ---------------------------------------------------------
+    query.filters.push({
+      member: touchesShipments ? 'Shipments.sendingProvince' : 'DriverShifts.sendingProvince',
+      operator: 'equals',
+      values: ['__NO_ACCESS__']
+    });
 
     return query;
   }

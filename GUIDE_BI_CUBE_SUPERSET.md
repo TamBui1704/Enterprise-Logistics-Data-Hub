@@ -1,6 +1,9 @@
-# 📊 Hướng Dẫn Thông Luồng BI Enterprise: Keycloak IAM (Google Authenticator 2FA) + ClickHouse Permissions + Cube.js RLS + Apache Superset
+# 📊 Hướng Dẫn Thông Luồng BI Enterprise Nâng Cao: Keycloak IAM (Google Authenticator 2FA) + ClickHouse Permissions + Cube.js RLS + Apache Superset
 
-Tài liệu này hướng dẫn chi tiết cách thiết lập và thông luồng hệ thống **Business Intelligence Enterprise (Cluster 4)** kết nối với **ClickHouse Data Warehouse (Cluster 2)**, quản lý định danh & xác thực tập trung qua **Keycloak IAM (Cluster 0)** hỗ trợ **Bảo mật 2 lớp Google Authenticator (TOTP)** & **Google Login**, thực thi **Row-Level Security (RLS)** động tại tầng **Cube.js Semantic Layer**, và trực quan hóa dữ liệu an toàn trên **Apache Superset**.
+> [!NOTE]
+> **Tài Liệu Mở Rộng Dành Cho Môi Trường Doanh Nghiệp (Enterprise IAM / SSO):**
+> Tài liệu này hướng dẫn kịch bản triển khai **Đầy Đủ Cụm 0 (Keycloak IAM)** với xác thực 2 lớp Google Authenticator (TOTP), Single Sign-On (SSO) và OIDC Token.
+> *(Nếu bạn chỉ muốn **kiểm thử luồng BI độc lập, nhanh gọn không cần Keycloak**, vui lòng xem trực tiếp **Bước 11** trong file [GUIDE_END_TO_END_TESTING.md](file:///home/tambt/Projects/Enterprise-Logistics-Data-Hub/GUIDE_END_TO_END_TESTING.md))*.
 
 ---
 
@@ -44,7 +47,7 @@ sequenceDiagram
 
 Keycloak đóng vai trò là **Identity Provider (IdP)** trung tâm cho toàn bộ Data Hub.
 
-### 2.1. Khởi chạy Cụm IAM (Tùy chọn khi cần SSO 2FA thực tế)
+### 2.1. Khởi chạy Cụm IAM
 ```bash
 cd cluster-0-iam && docker compose up -d
 ```
@@ -79,184 +82,34 @@ cd cluster-0-iam && docker compose up -d
 
 ## 3. Thiết Kế Bảng Phân Quyền (`dim_user_permissions`) trên ClickHouse
 
-Thay vì fix cứng quyền trong code, ma trận phân quyền người dùng được lưu trữ trực tiếp tại Data Warehouse ClickHouse dưới dạng bảng Dimension. Data Engineer có thể dùng dbt để cập nhật bảng này tự động từ hệ thống HR/CRM.
-
-Chạy câu lệnh SQL DDL sau trên ClickHouse Database (`default`):
+Thay vì fix cứng quyền trong code, ma trận phân quyền người dùng được lưu trữ trực tiếp tại Data Warehouse ClickHouse dưới dạng bảng Dimension. Data Engineer có thể dùng dbt hoặc nạp từ script [init_permissions.sql](file:///home/tambt/Projects/Enterprise-Logistics-Data-Hub/cluster-2-lakehouse-dwh/clickhouse_config/init_permissions.sql):
 
 ```bash
-docker exec -it clickhouse_dwh clickhouse-client -q "
+docker exec -i clickhouse_dwh clickhouse-client < cluster-2-lakehouse-dwh/clickhouse_config/init_permissions.sql
+```
+
+Bảng phân quyền có cấu trúc:
+```sql
 CREATE TABLE IF NOT EXISTS default.dim_user_permissions (
-    username String,
-    role String,
-    province_access Array(String),
+    username String,                -- Username / Email khớp với Keycloak (VD: manager_south)
+    role String,                    -- Vai trò: ADMIN, REGIONAL_MANAGER, DRIVER, STAFF
+    province_access Array(String),  -- Mảng danh sách tỉnh thành được phép xem (hoặc ['ALL'])
     updated_at DateTime DEFAULT now()
 ) ENGINE = MergeTree()
 ORDER BY username;
-
-INSERT INTO default.dim_user_permissions (username, role, province_access) VALUES 
-('admin@logistics.com', 'ADMIN', ['ALL']),
-('admin', 'ADMIN', ['ALL']),
-('manager_south', 'REGIONAL_MANAGER', ['Hồ Chí Minh', 'Đồng Nai', 'Bình Dương']),
-('manager_north', 'REGIONAL_MANAGER', ['Hà Nội', 'Hải Phòng', 'Bắc Ninh']),
-('driver_hcm_01', 'DRIVER', ['Hồ Chí Minh']);
-"
 ```
 
 ---
 
 ## 4. Cấu Hình Cửa Khẩu Bảo Mật Cube.js (Semantic Layer)
 
-Mã nguồn tại `cluster-4-bi/cube_conf/cube.js` đóng vai trò là "Cửa khẩu Security", thực hiện 3 nhiệm vụ cốt lõi:
-1. **Xác thực Credential** của User với Keycloak IAM (hoặc fallback cho Dev mode).
+Mã nguồn tại [cube.js](file:///home/tambt/Projects/Enterprise-Logistics-Data-Hub/cluster-4-bi/cube_conf/cube.js) đóng vai trò là "Cửa khẩu Security", thực hiện các nhiệm vụ:
+1. **Xác thực Credential** của User với Keycloak IAM (hoặc fallback khi chạy dev).
 2. **Truy vấn ClickHouse** lấy danh sách tỉnh thành được phân quyền cho User và nạp vào `securityContext`.
 3. **Thực thi `queryRewrite`**: Tự động chặn lọc dòng dữ liệu theo tỉnh thành đối với MỌI truy vấn (REST API, GraphQL, và SQL API giả lập PostgreSQL).
 
-### 4.1. Mã nguồn `cluster-4-bi/cube_conf/cube.js`
+### 4.1. Schema YAML Định Nghĩa Chỉ Số Logistics ([Shipments.yml](file:///home/tambt/Projects/Enterprise-Logistics-Data-Hub/cluster-4-bi/cube_conf/schema/Shipments.yml))
 
-```javascript
-/**
- * Cube.js Configuration Module - Enterprise IAM & Dynamic RLS
- */
-const CLICKHOUSE_HOST = process.env.CUBEJS_DB_HOST || 'clickhouse_dwh';
-const CLICKHOUSE_PORT = process.env.CUBEJS_DB_PORT || '8123';
-const CLICKHOUSE_USER = process.env.CUBEJS_DB_USER || 'default';
-const CLICKHOUSE_PASS = process.env.CUBEJS_DB_PASS || '';
-
-const KEYCLOAK_URL = process.env.KEYCLOAK_URL || 'http://keycloak:8080';
-const KEYCLOAK_REALM = process.env.KEYCLOAK_REALM || 'master';
-
-async function getUserPermissionsFromClickHouse(username) {
-  try {
-    const cleanUser = String(username).replace(/'/g, "''");
-    const sql = `SELECT role, province_access FROM default.dim_user_permissions WHERE username = '${cleanUser}' FORMAT JSON`;
-    const url = `http://${CLICKHOUSE_HOST}:${CLICKHOUSE_PORT}/?query=${encodeURIComponent(sql)}`;
-    
-    const headers = {};
-    if (CLICKHOUSE_USER) {
-      headers['X-ClickHouse-User'] = CLICKHOUSE_USER;
-      headers['X-ClickHouse-Key'] = CLICKHOUSE_PASS;
-    }
-
-    const res = await fetch(url, { headers });
-    if (res.ok) {
-      const json = await res.json();
-      if (json.data && json.data.length > 0) {
-        const row = json.data[0];
-        let access = row.province_access;
-        if (typeof access === 'string') {
-          try { access = JSON.parse(access); } catch (e) { access = [access]; }
-        }
-        return {
-          role: row.role || 'USER',
-          province_access: Array.isArray(access) ? access : [access]
-        };
-      }
-    }
-  } catch (err) {
-    console.warn(`[Cube RLS] Lỗi truy vấn dim_user_permissions:`, err.message);
-  }
-
-  if (username === 'admin' || username === 'admin@logistics.com') {
-    return { role: 'ADMIN', province_access: ['ALL'] };
-  }
-  return { role: 'REGIONAL_MANAGER', province_access: ['Hồ Chí Minh', 'Đồng Nai'] };
-}
-
-module.exports = {
-  // 1. Dành cho REST / GraphQL API (AI Agent, Web Apps, Microservices)
-  checkAuth: async (req, auth) => {
-    let username = req.securityContext?.preferred_username || req.securityContext?.user || req.securityContext?.sub;
-    
-    if (!username && req.headers?.authorization) {
-      try {
-        const token = req.headers.authorization.replace(/^Bearer\s+/i, '');
-        const payloadBase64 = token.split('.')[1];
-        if (payloadBase64) {
-          const payloadJson = JSON.parse(Buffer.from(payloadBase64, 'base64').toString('utf8'));
-          username = payloadJson.preferred_username || payloadJson.sub || payloadJson.email;
-        }
-      } catch (e) {
-        console.error('[Cube Auth] Lỗi giải mã JWT Keycloak Token:', e.message);
-      }
-    }
-
-    if (!username) {
-      if (process.env.CUBEJS_DEV_MODE === 'true' || process.env.NODE_ENV !== 'production') {
-        username = 'admin';
-      } else {
-        throw new Error('Unauthorized: Thiếu Token Keycloak hoặc JWT không hợp lệ!');
-      }
-    }
-
-    const perm = await getUserPermissionsFromClickHouse(username);
-    req.securityContext = {
-      username: username,
-      role: perm.role,
-      province_access: perm.province_access
-    };
-  },
-
-  // 2. Dành cho SQL API (Superset, PowerBI, Excel - Cổng PostgreSQL 5432/15432)
-  checkSqlAuth: async (req, user, password) => {
-    if (!user) throw new Error('Unauthorized: Thiếu Username!');
-
-    const tokenEndpoint = `${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/token`;
-    const bodyParams = new URLSearchParams();
-    bodyParams.append('client_id', 'cube');
-    bodyParams.append('username', user);
-    bodyParams.append('password', password || '');
-    bodyParams.append('grant_type', 'password');
-
-    try {
-      const res = await fetch(tokenEndpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: bodyParams
-      });
-      if (!res.ok) {
-        console.warn(`[Cube SQL Auth] Keycloak từ chối xác thực user '${user}'. Đang dùng chế độ dự phòng.`);
-      }
-    } catch (err) {}
-
-    const perm = await getUserPermissionsFromClickHouse(user);
-    return {
-      password: password,
-      skipPasswordCheck: true,
-      securityContext: {
-        username: user,
-        role: perm.role,
-        province_access: perm.province_access
-      }
-    };
-  },
-
-  // 3. Thực thi Dynamic Row-Level Security (RLS) qua Query Rewrite
-  queryRewrite: async (query, { securityContext }) => {
-    if (!securityContext) return query;
-
-    // ADMIN hoặc quyền 'ALL' -> Toàn quyền xem toàn quốc
-    if (securityContext.role === 'ADMIN' || (securityContext.province_access && securityContext.province_access.includes('ALL'))) {
-      return query;
-    }
-
-    // Regional Manager -> Tự động chèn filter theo danh sách tỉnh được cấp phép
-    if (securityContext.province_access && securityContext.province_access.length > 0) {
-      query.filters = query.filters || [];
-      query.filters.push({
-        member: 'Shipments.sendingProvince',
-        operator: 'equals',
-        values: securityContext.province_access
-      });
-    }
-
-    return query;
-  }
-};
-```
-
-### 4.2. Schema YAML Định Nghĩa Chỉ Số Logistics (`Shipments.yml`)
-
-Tại `cluster-4-bi/cube_conf/schema/Shipments.yml`:
 ```yaml
 cubes:
   - name: Shipments
@@ -322,82 +175,32 @@ Cổng dịch vụ:
   * Từ container Superset: `cube_semantic_layer:5432`
   * Từ máy host (DBeaver, PowerBI): `localhost:15432`
 
-### 5.2. Khởi tạo tài khoản Superset ban đầu (nếu chạy lần đầu)
-```bash
-docker exec -it superset_bi superset fab create-admin --username admin --firstname Admin --lastname Logistics --email admin@logistics.com --password admin
-docker exec -it superset_bi superset db upgrade
-docker exec -it superset_bi superset init
-```
-
-### 5.3. Kết nối Superset vào Cube Semantic Layer
+### 5.2. Kết nối Superset vào Cube Semantic Layer
 1. Mở trình duyệt truy cập: `http://localhost:8088` $\rightarrow$ Đăng nhập `admin` / `admin`.
 2. Chọn biểu tượng **Settings (bánh răng)** góc trên bên phải $\rightarrow$ Chọn **Database Connections** $\rightarrow$ Bấm **+ Database**.
 3. Chọn loại Database: **PostgreSQL** (Giao thức giả lập chuẩn của Cube SQL API).
-4. Điền thông tin kết nối:
-   * **Host**: `cube_semantic_layer`
-   * **Port**: `5432`
-   * **Database Name**: `default`
-   * **Username**: `admin` (hoặc `manager_south` để kiểm tra phân quyền RLS)
-   * **Password**: `admin` (hoặc bất kỳ ký tự nào)
-   * Hoặc dán trực tiếp **SQLAlchemy URI**:
-     ```text
-     postgresql://admin:admin@cube_semantic_layer:5432/default
-     ```
-     *(Dành cho Regional Manager Miền Nam: `postgresql://manager_south:pass@cube_semantic_layer:5432/default`)*
-5. Bấm nút **Test Connection** $\rightarrow$ Thấy thông báo màu xanh `Connection looks good!` $\rightarrow$ Bấm **Connect**.
+4. Điền chuỗi **SQLAlchemy URI**:
+   ```text
+   postgresql://manager_south:<password>@cube_semantic_layer:5432/default
+   ```
+5. Bấm **Test Connection** $\rightarrow$ Thấy thông báo màu xanh `Connection looks good!` $\rightarrow$ Bấm **Connect**.
 6. Vào mục **SQL Lab** $\rightarrow$ **SQL Editor** $\rightarrow$ Chạy truy vấn:
    ```sql
    SELECT sendingProvince, totalBookings, totalRevenue FROM Shipments;
    ```
-   *Nếu đăng nhập bằng `manager_south`, dữ liệu trả về sẽ tự động bị giới hạn duy nhất tại 2 tỉnh Hồ Chí Minh và Đồng Nai!*
+   *Dữ liệu trả về sẽ tự động bị giới hạn duy nhất tại 2 tỉnh Hồ Chí Minh và Đồng Nai theo đúng quyền hạn!*
 
 ---
 
-## 6. Hướng Dẫn Kiểm Thử Toàn Luồng (End-to-End Testing Matrix)
+## 6. Bảng Tổng Hợp Kiểm Thử Kịch Bản Enterprise
 
 | Kịch Bản | Thao Tác | Kết Quả Kỳ Vọng |
 | :--- | :--- | :--- |
-| **1. Admin Query Toàn Quốc** | Dùng user `admin` query chỉ số qua SQL API hoặc Playground (`http://localhost:4000`). | Cube sinh câu lệnh SQL chọc xuống ClickHouse **không có WHERE lọc tỉnh**, trả về đầy đủ 9 tỉnh toàn quốc (50,101 đơn hàng). |
-| **2. Manager Miền Nam Query (RLS)** | Dùng user `manager_south` query qua SQL API (`cube_semantic_layer:5432`). | Cube tự động rewrite SQL thành: `WHERE sendingProvince IN ('Hồ Chí Minh', 'Đồng Nai')`, chỉ hiển thị số liệu 2 tỉnh phía Nam. |
-| **3. AI Agent Truy Cấp REST API** | AI Agent gửi HTTP Request: <br>`POST http://localhost:4000/cubejs-api/v1/load` <br>kèm Header `Authorization: Bearer <JWT>`. | Cube giải mã JWT token, kiểm tra ma trận `dim_user_permissions` ở ClickHouse và trả về kết quả JSON đã được lọc RLS chính xác. |
-| **4. Superset Dashboard** | Tạo Chart Bar/Line trên Superset từ bảng `Shipments`. | BI Dashboard hiển thị tốc độ mili-giây, tận dụng Cube Store caching mà không gây tải cho ClickHouse. |
+| **1. Đăng nhập Keycloak 2FA** | Truy cập Keycloak với user `manager_south` lần đầu. | Keycloak yêu cầu quét mã QR bằng Google Authenticator và nhập mã OTP 6 chữ số thành công. |
+| **2. Admin Query Toàn Quốc** | Dùng user `admin` query chỉ số qua SQL API hoặc Playground (`http://localhost:4000`). | Cube sinh câu lệnh SQL chọc xuống ClickHouse **không có WHERE lọc tỉnh**, trả về đầy đủ 9 tỉnh toàn quốc (50,101 đơn hàng). |
+| **3. Manager Miền Nam Query (RLS)** | Dùng user `manager_south` query qua SQL API (`cube_semantic_layer:5432`). | Cube tự động rewrite SQL thành: `WHERE sendingProvince IN ('Hồ Chí Minh', 'Đồng Nai')`, chỉ hiển thị số liệu các tỉnh phía Nam. |
+| **4. AI Agent Truy Cấp REST API** | AI Agent gửi HTTP Request: <br>`POST http://localhost:4000/cubejs-api/v1/load` <br>kèm Header `Authorization: Bearer <Keycloak_JWT>`. | Cube giải mã JWT token, kiểm tra ma trận `dim_user_permissions` ở ClickHouse và trả về kết quả JSON đã được lọc RLS chính xác. |
 
 ---
 
-🎉 **Chúc mừng!** Cụm 4 BI Semantic Layer đã thông luồng hoàn chỉnh từ ClickHouse DWH $\rightarrow$ Cube.dev RLS Metrics Layer $\rightarrow$ Apache Superset & AI Agents!
-
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User as Superset / AI Agent
-    participant CubeServer as Cube Server (Port 4000/5432)
-    participant CubeJS as cube.js (Logic & Auth Hooks)
-    participant YAML as schema/*.yml (Data Model in RAM)
-    participant CubeStore as .cubestore (Cache Engine)
-    participant ClickHouse as ClickHouse DWH
-
-    Note over CubeServer, YAML: GIAI ĐOẠN KHỞI ĐỘNG (BOOT)
-    CubeServer->>CubeJS: Nạp cấu hình & các hooks (checkAuth, queryRewrite)
-    CubeServer->>YAML: Quét & biên dịch tất cả file .yml thành Data Graph trong RAM
-    CubeServer->>CubeStore: Khởi động engine RocksDB nhúng tại .cubestore
-    CubeServer-->>User: Mở cổng sẵn sàng (4000 REST, 5432 SQL)
-
-    Note over User, ClickHouse: GIAI ĐOẠN PHỤC VỤ TRUY VẤN (RUNTIME)
-    User->>CubeServer: Gửi truy vấn (ví dụ user manager_south)
-    CubeServer->>CubeJS: Gọi checkSqlAuth() / checkAuth() xác thực danh tính
-    CubeJS->>ClickHouse: Đọc quyền tỉnh thành từ dim_user_permissions
-    ClickHouse-->>CubeJS: Trả về: ['Hồ Chí Minh', 'Đồng Nai']
-    CubeJS->>CubeJS: Nạp vào securityContext
-    CubeServer->>CubeJS: Gọi queryRewrite() để tự động chèn filter tỉnh
-    CubeServer->>YAML: Ánh xạ Measures & Dimensions sang SQL ClickHouse
-    alt Đã có dữ liệu trong Cache
-        CubeServer->>CubeStore: Đọc kết quả từ .cubestore (< 50ms)
-    else Chưa có Cache
-        CubeServer->>ClickHouse: Gửi SQL đã gắn RLS WHERE xuống ClickHouse
-        ClickHouse-->>CubeServer: Trả về dữ liệu gốc
-        CubeServer->>CubeStore: Ghi bản nén vào .cubestore để tái sử dụng
-    end
-    CubeServer-->>User: Trả dữ liệu sạch và an toàn cho Superset / AI
-  ```
-
+🎉 **Hoàn tất!** Hệ thống đạt chuẩn bảo mật cấp Doanh nghiệp: Keycloak 2FA (Google Authenticator) quản lý SSO $\rightarrow$ ClickHouse lưu ma trận phân quyền $\rightarrow$ Cube.js thực thi RLS động tại Semantic Layer $\rightarrow$ Superset & AI Agents khai thác dữ liệu an toàn tuyệt đối!

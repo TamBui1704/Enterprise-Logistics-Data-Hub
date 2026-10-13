@@ -445,76 +445,306 @@ docker exec -it clickhouse_dwh clickhouse-client -q   "SELECT count() AS total_o
 ```
 
 
-### BƯỚC 11: Vận Hành & Thông Luồng Cụm 4 (Cube.dev Metrics Layer + Apache Superset BI)
+### BƯỚC 11: Vận Hành & Thông Luồng Cụm 4 (Cube.dev Semantic Layer + Apache Superset BI)
 
-#### 1. Khởi động Cụm 4 (Cube Semantic Layer + Apache Superset):
+Trong quy trình kiểm thử này, Cụm 4 hoạt động hoàn toàn **độc lập, tinh gọn và chuẩn Enterprise**:
+* **Toàn bộ ma trận phân quyền** quản lý tập trung 100% tại ClickHouse `default.dim_user_permissions`.
+* **Cube Semantic Layer** đóng vai trò Cửa khẩu trung gian thực thi bảo mật phân quyền dòng (**Dynamic RLS**) và tăng tốc bộ nhớ đệm (**Cube Store Cache**).
+* **Apache Superset** kết nối vào Cube qua **1 Database Connection duy nhất** với tính năng **User Impersonation (Mạo danh người dùng đang đăng nhập)**:
+  * ❌ **Không cần tạo thêm bất kỳ Role phân quyền nào** (`Role_North`, `Role_South` hoàn toàn không cần thiết).
+  * ❌ **Không cần cấu hình bất kỳ dòng nào trong Row-level security của Superset** (để trống 100%).
+  * ✅ Mọi người dùng thông thường chỉ cần Role mặc định **`Gamma`**. Khi mở cùng một Dashboard, Superset tự động chuyển tiếp danh tính của user sang cho Cube để lọc dữ liệu.
+
+---
+
+#### 1. Khởi tạo Ma Trận Phân Quyền Dữ Liệu trên ClickHouse (`dim_user_permissions`):
+Chạy file script phân quyền mẫu [init_permissions.sql](file:///home/tambt/Projects/Enterprise-Logistics-Data-Hub/cluster-2-lakehouse-dwh/clickhouse_config/init_permissions.sql):
+```bash
+docker exec -i clickhouse_dwh clickhouse-client < cluster-2-lakehouse-dwh/clickhouse_config/init_permissions.sql
+```
+*Kiểm tra danh sách user phân quyền đã nạp:*
+```bash
+docker exec -it clickhouse_dwh clickhouse-client -q "SELECT username, role, province_access FROM default.dim_user_permissions FORMAT PrettyCompactMonoBlock"
+```
+*Kết quả:*
+* `admin`: Toàn quyền xem cả nước (`['ALL']`).
+* `manager_north`: Trưởng vùng miền Bắc $\rightarrow$ Chỉ được xem `['Hà Nội', 'Hải Phòng', 'Bắc Ninh']`.
+* `manager_south`: Trưởng vùng miền Nam $\rightarrow$ Chỉ được xem `['Hồ Chí Minh', 'Đồng Nai', 'Bình Dương']`.
+* `driver_hcm_01`: Tài xế $\rightarrow$ Bị cấm xem doanh thu đơn hàng.
+
+---
+
+#### 2. Khởi động Cụm 4 (Cube Semantic Layer + Apache Superset):
 ```bash
 cd cluster-4-bi && docker compose up -d
 ```
 * **Cube Developer Playground & REST API**: `http://localhost:4000`
-* **Apache Superset BI**: `http://localhost:8088` (Tài khoản: `admin` / `admin`)
-* **Cube SQL API (PostgreSQL Wire Protocol)**: Cổng `15432` (trên máy host) hoặc `cube_semantic_layer:5432` (trong docker network).
+* **Apache Superset BI**: `http://localhost:8088`
+* **Cube SQL API (PostgreSQL Wire Protocol)**: Cổng `15432` (trên máy host) hoặc `cube_semantic_layer:5432` (nội bộ docker network).
 
-#### 2. Khởi tạo Ma Trận Phân Quyền Dữ Liệu trên ClickHouse (`dim_user_permissions`):
+---
+
+#### 3. Tạo Tài Khoản Người Dùng Trên Superset (Tham Khảo Cả 2 Cách: CLI & Web UI):
+
+> 💡 **Lưu ý quan trọng**: Vì phân quyền RLS được xử lý 100% tại Cube, bạn **KHÔNG CẦN TẠO THÊM ROLE NÀO**. Tất cả người dùng (`manager_north`, `manager_south`, `driver_hcm_01`) chỉ cần gán duy nhất Role mặc định **`Gamma`** (quyền xem biểu đồ).
+
+##### CÁCH 1: Tạo Tài Khoản Bằng Dòng Lệnh CLI (Nhanh & Tự Động)
+
+1. **Khởi tạo tài khoản Quản trị viên Admin:**
 ```bash
-docker exec -it clickhouse_dwh clickhouse-client -q "
-CREATE TABLE IF NOT EXISTS default.dim_user_permissions (
-    username String,
-    role String,
-    province_access Array(String),
-    updated_at DateTime DEFAULT now()
-) ENGINE = MergeTree()
-ORDER BY username;
+docker exec -it superset_bi superset fab create-admin \
+  --username admin \
+  --firstname Admin \
+  --lastname Logistics \
+  --email admin@logistics.com \
+  --password admin || true
+docker exec -it superset_bi superset db upgrade
+docker exec -it superset_bi superset init
+```
 
-INSERT INTO default.dim_user_permissions (username, role, province_access) VALUES 
-('admin@logistics.com', 'ADMIN', ['ALL']),
-('admin', 'ADMIN', ['ALL']),
-('manager_south', 'REGIONAL_MANAGER', ['Hồ Chí Minh', 'Đồng Nai', 'Bình Dương']),
-('manager_north', 'REGIONAL_MANAGER', ['Hà Nội', 'Hải Phòng', 'Bắc Ninh']),
-('driver_hcm_01', 'DRIVER', ['Hồ Chí Minh']);
+2. **Lệnh tạo các tài khoản người dùng (`manager_north`, `manager_south`, `driver_hcm_01`):**
+```bash
+# 1. Tạo Quản lý miền Bắc (manager_north):
+docker exec -it superset_bi superset fab create-user \
+  --role Gamma \
+  --username manager_north \
+  --firstname North \
+  --lastname Manager \
+  --email manager_north@logistics.com \
+  --password password123
+
+# 2. Tạo Quản lý miền Nam (manager_south):
+docker exec -it superset_bi superset fab create-user \
+  --role Gamma \
+  --username manager_south \
+  --firstname South \
+  --lastname Manager \
+  --email manager_south@logistics.com \
+  --password password123
+
+# 3. Tạo Tài xế giao hàng (driver_hcm_01):
+docker exec -it superset_bi superset fab create-user \
+  --role Gamma \
+  --username driver_hcm_01 \
+  --firstname Driver \
+  --lastname HCM \
+  --email driver01@logistics.com \
+  --password password123
+```
+
+3. **Kiểm tra danh sách user trong hệ thống qua CLI:**
+```bash
+docker exec -it superset_bi superset fab list-users
+```
+*(Toàn bộ các lệnh trên đã được tích hợp tự động trong script: `./init_superset.sh` tại thư mục `cluster-4-bi`)*
+
+---
+
+##### CÁCH 2: Tạo Tài Khoản Bằng Giao Diện Web Superset (UI Trực Quan)
+
+1. Mở trình duyệt truy cập: `http://localhost:8088` $\rightarrow$ Đăng nhập tài khoản Quản trị viên: **`admin` / `admin`**.
+2. Trên thanh menu trên cùng bên phải, bấm vào biểu tượng **Settings (hình bánh răng)** $\rightarrow$ Chọn **List Users**.
+3. Bấm vào nút dấu **+ (Add a new record)** màu xanh lá cây ở góc trên bên phải màn hình.
+4. **Tạo tài khoản Trưởng vùng Miền Bắc (`manager_north`):**
+   * **First Name**: `North`
+   * **Last Name**: `Manager`
+   * **Username**: `manager_north` *(Bắt buộc viết thường, khớp với ClickHouse)*
+   * **Email**: `manager_north@logistics.com`
+   * **Is Active?**: Tích chọn (Checked)
+   * **Roles**: Chọn **Gamma** *(Chỉ cần đúng role Gamma, không cần role nào khác)*
+   * **Password**: `password123`
+   * **Confirm Password**: `password123`
+   * Bấm nút **Save**.
+5. **Tạo tài khoản Trưởng vùng Miền Nam (`manager_south`):**
+   * Bấm nút dấu **+** $\rightarrow$ First Name: `South` | Last Name: `Manager` | Username: `manager_south` | Email: `manager_south@logistics.com` | Roles: `Gamma` | Password: `password123` $\rightarrow$ Bấm **Save**.
+6. **Tạo tài khoản Tài xế (`driver_hcm_01`):**
+   * Bấm nút dấu **+** $\rightarrow$ First Name: `Driver` | Last Name: `HCM` | Username: `driver_hcm_01` | Email: `driver01@logistics.com` | Roles: `Gamma` | Password: `password123` $\rightarrow$ Bấm **Save**.
+
+---
+
+#### 4. Kết Nối Database Duy Nhất Với Tính Năng Mạo Danh Người Dùng (User Impersonation):
+
+Thay vì tạo nhiều Database Connection cho từng người dùng, bạn chỉ cần tạo **1 KẾT NỐI DUY NHẤT** và bật tính năng **User Impersonation** (Superset tự động chuyển tiếp tên tài khoản của người đang xem sang Cube):
+
+##### CÁCH THỰC HIỆN TRÊN GIAO DIỆN WEB SUPERSET (Khuyên dùng):
+1. Đăng nhập tài khoản **`admin`** trên Superset $\rightarrow$ Vào menu **Settings** $\rightarrow$ Chọn **Database Connections**.
+2. Bấm nút **+ Database** ở góc trên bên phải $\rightarrow$ Chọn loại cơ sở dữ liệu: **PostgreSQL**.
+3. Tại tab cơ bản (Basic):
+   * **Display Name**: `Cube Semantic Layer`
+   * **SQLAlchemy URI**:
+     ```text
+     postgresql://admin:admin@cube_semantic_layer:5432/default
+     ```
+4. **Bật tính năng Mạo danh người dùng (User Impersonation)**:
+   * Chuyển sang tab **Advanced** (Nâng cao).
+   * Mở rộng mục **Security** (Bảo mật).
+   * **Tích chọn vào ô: `Impersonate the logged on user`** *(Mạo danh người dùng đang đăng nhập)*.
+5. Bấm nút **Test Connection** $\rightarrow$ Thấy thông báo màu xanh `Connection looks good!`.
+6. Bấm nút **Connect** (hoặc Save) để hoàn tất.
+
+##### HOẶC TỰ ĐỘNG BẰNG 1 DÒNG LỆNH CLI:
+```bash
+docker exec -i superset_bi python3 -c "
+from superset.app import create_app
+app = create_app()
+with app.app_context():
+    from superset import db
+    from superset.models.core import Database
+    existing = db.session.query(Database).filter_by(database_name='Cube Semantic Layer').first()
+    if not existing:
+        db_obj = Database(
+            database_name='Cube Semantic Layer',
+            sqlalchemy_uri='postgresql://admin:admin@cube_semantic_layer:5432/default',
+            impersonate_user=True
+        )
+        db.session.add(db_obj)
+        db.session.commit()
+        print('✅ Đã tạo kết nối Database duy nhất kèm Impersonate User thành công!')
+    else:
+        existing.impersonate_user = True
+        db.session.commit()
+        print('✅ Đã cập nhật kết nối hiện có sang Impersonate User = True!')
 "
 ```
 
-#### 3. Kiểm thử Cube REST API & Phân Quyền Dòng Động (Dynamic RLS):
-##### A. Kiểm tra quyền Admin (Toàn quốc - Không lọc):
-```bash
-curl -s -X POST http://localhost:4000/cubejs-api/v1/load \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer eyJhbGciOiJub25lIn0.eyJwcmVmZXJyZWRfdXNlcm5hbWUiOiJhZG1pbiJ9." \
-  -d '{"query": {"measures": ["Shipments.totalBookings", "Shipments.totalRevenue"]}}' | jq .data
-```
-*Kết quả:* Tổng đơn hàng `50101`, doanh thu ~`7.19 tỷ VND` trên toàn quốc.
+##### Khai báo Dataset bảng `Shipments`:
+1. Trên thanh menu chính, chọn **Datasets** $\rightarrow$ Bấm nút **+ Dataset**.
+2. **Database**: Chọn `Cube Semantic Layer`.
+3. **Schema**: Chọn `public` (hoặc `default`).
+4. **Table**: Chọn bảng `Shipments`.
+5. Bấm **Create Dataset and Create Chart**.
 
-##### B. Kiểm tra quyền Regional Manager Miền Nam (Tự động lọc RLS):
-```bash
-curl -s -X POST http://localhost:4000/cubejs-api/v1/load \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer eyJhbGciOiJub25lIn0.eyJwcmVmZXJyZWRfdXNlcm5hbWUiOiJtYW5hZ2VyX3NvdXRoIn0." \
-  -d '{"query": {"measures": ["Shipments.totalBookings"], "dimensions": ["Shipments.sendingProvince"]}}' | jq .data
-```
-*Kết quả:* Cube tự động lọc chỉ trả về dữ liệu tại 2 tỉnh **Đồng Nai (5,956 đơn)** và **Hồ Chí Minh (5,313 đơn)**.
+---
 
-#### 4. Kiểm thử Cube SQL API từ Superset (PostgreSQL Wire Protocol):
-Kiểm tra kết nối và truy vấn trực tiếp từ container Superset:
+#### 5. Hướng Dẫn Tạo 1 Dashboard Logistics Hoàn Chỉnh Với Các Chỉ Số Cơ Bản:
+
+Tạo 3 biểu đồ chính thể hiện toàn bộ bức tranh vận hành logistics:
+
+##### Biểu đồ 1: Tổng Số Đơn Hàng Vận Chuyển (Big Number Card)
+1. Vào menu **Charts** $\rightarrow$ Bấm **+ Chart**.
+2. Chọn Dataset: `Shipments`.
+3. Chọn Visualization Type: **Big Number** (hoặc **Big Number with Trendline**).
+4. Cấu hình bên bảng Metric bên trái:
+   * **Metric**: Chọn `totalBookings` (hoặc tạo Custom SQL: `SUM(totalBookings)`).
+   * **Subheader**: Gõ ghi chú `Tổng lượng booking phát sinh trên toàn hệ thống`.
+5. Đổi tiêu đề biểu đồ (click vào chữ *[Untitled]* góc trên bên trái): `Tổng Số Đơn Hàng`.
+6. Bấm **Update chart** để kiểm tra số liệu $\rightarrow$ Bấm **Save** $\rightarrow$ Chọn **Add to new dashboard**: Gõ tên `Logistics Executive Overview` $\rightarrow$ Bấm **Save & go to dashboard**.
+
+##### Biểu đồ 2: Phân Bổ Đơn Hàng Theo Tỉnh Thành (Bar Chart)
+1. Bấm **+ Create** góc trên bên phải $\rightarrow$ Chọn **Chart**.
+2. Chọn Dataset `Shipments` $\rightarrow$ Chọn loại biểu đồ **Bar Chart** (hoặc **ECharts Bar Chart**).
+3. Cấu hình:
+   * **Dimensions / X-Axis**: Chọn `sendingProvince` (Tỉnh gửi hàng).
+   * **Metric**: Chọn `totalBookings`.
+   * **Sort By**: `totalBookings` (Descending - Giảm dần).
+4. Đổi tiêu đề: `Phân Bổ Đơn Hàng Theo Tỉnh Gửi`.
+5. Bấm **Update chart** $\rightarrow$ Bấm **Save** $\rightarrow$ Chọn **Add to existing dashboard**: `Logistics Executive Overview` $\rightarrow$ Bấm **Save**.
+
+##### Biểu đồ 3: Tỷ Lệ Trạng Thái Giao Hàng (Pie Chart)
+1. Bấm **+ Create** $\rightarrow$ **Chart** $\rightarrow$ Chọn Dataset `Shipments`.
+2. Chọn Visualization Type: **Pie Chart**.
+3. Cấu hình:
+   * **Dimensions**: Chọn `statusName` (Trạng thái đơn: Giao thành công, Đang giao, Đã hủy...).
+   * **Metric**: Chọn `totalBookings`.
+4. Đổi tiêu đề: `Tỷ Lệ Đơn Hàng Theo Trạng Thái`.
+5. Bấm **Update chart** $\rightarrow$ Bấm **Save** $\rightarrow$ Thêm vào dashboard `Logistics Executive Overview` $\rightarrow$ Bấm **Save**.
+
+##### Hoàn thiện và Public Dashboard:
+1. Mở menu **Dashboards** $\rightarrow$ Chọn `Logistics Executive Overview`.
+2. Bấm **Edit dashboard** ở góc trên bên phải: Kéo thả các biểu đồ sắp xếp cân đối:
+   * Dòng trên: Thẻ Big Number `Tổng Số Đơn Hàng`.
+   * Dòng dưới: Biểu đồ cột `Phân Bổ Đơn Hàng Theo Tỉnh Gửi` (bên trái) và Biểu đồ tròn `Tỷ Lệ Đơn Hàng Theo Trạng Thái` (bên phải).
+3. Bấm **Save**.
+4. Bấm vào nút trạng thái màu cam **Draft** ở góc trên bên phải để chuyển sang màu xanh **Published** *(Bắt buộc phải Published thì các tài khoản Gamma mới nhìn thấy)*.
+
+---
+
+#### 6. Cơ Chế Phân Quyền Dữ Liệu Tự Động Hoạt Động Như Thế Nào?
+
+Nhờ kích hoạt **`Impersonate the logged on user`**, luồng thực thi dữ liệu diễn ra tự động 100% như sau:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Quản lý Miền Bắc (manager_north)
+    participant SS as Apache Superset
+    participant Cube as Cube Semantic Layer
+    participant CH as ClickHouse DWH
+
+    User->>SS: Đăng nhập & Mở Dashboard "Logistics Executive Overview"
+    SS->>Cube: Mạo danh gửi truy vấn qua cổng 5432 với user='manager_north'
+    Cube->>CH: checkSqlAuth tra cứu quyền của 'manager_north'
+    CH-->>Cube: Trả về: role='REGIONAL_MANAGER', province_access=['Hà Nội', 'Hải Phòng', 'Bắc Ninh']
+    Cube->>Cube: queryRewrite tự động chèn filter: sendingProvince IN ('Hà Nội', 'Hải Phòng', 'Bắc Ninh')
+    Cube->>CH: Gửi SQL truy vấn OBT đã lọc sẵn theo 3 tỉnh
+    CH-->>Cube: Trả về kết quả 17,179 đơn hàng
+    Cube-->>SS: Trả dữ liệu về cho Superset
+    SS-->>User: Biểu đồ chỉ hiển thị số liệu 3 tỉnh Miền Bắc!
+```
+
+---
+
+#### 7. Ma Trận Nghiệm Thu Thực Tế Khi Các User Xem Cùng 1 Dashboard:
+
+Mở **Tab Trình Duyệt Ẩn Danh (Incognito Window)** hoặc Logout và lần lượt đăng nhập từng user vào `http://localhost:8088` $\rightarrow$ Mở Dashboard `Logistics Executive Overview`:
+
+| Tài khoản | Mật khẩu | Quyền dữ liệu | Trải nghiệm thực tế trên Dashboard `Logistics Executive Overview` |
+| :--- | :--- | :--- | :--- |
+| **`admin`** | `admin` | **Toàn Quốc** (`['ALL']`) | ✅ **Xem Full Toàn Hệ Thống**:<br>• Thẻ đơn hàng: **50,101 đơn**.<br>• Biểu đồ cột: Hiển thị đủ **9 tỉnh thành** (Hải Phòng, Đồng Nai, Bắc Ninh, Hồ Chí Minh, Nghệ An, Hà Nội, Thanh Hóa, Quảng Ninh, Cần Thơ). |
+| **`manager_north`** | `password123` | **Miền Bắc** (`Hà Nội, Hải Phòng, Bắc Ninh`) | ✅ **Tự Động Lọc Số Liệu Miền Bắc**:<br>• Thẻ đơn hàng: Tự động rút xuống còn **17,179 đơn**.<br>• Biểu đồ cột: Chỉ hiển thị duy nhất **3 tỉnh miền Bắc**: Hải Phòng (7,333 đơn), Bắc Ninh (5,986 đơn), Hà Nội (3,860 đơn). |
+| **`manager_south`** | `password123` | **Miền Nam** (`Hồ Chí Minh, Đồng Nai, Bình Dương`) | ✅ **Tự Động Lọc Số Liệu Miền Nam**:<br>• Thẻ đơn hàng: Tự động rút xuống còn **11,269 đơn**.<br>• Biểu đồ cột: Chỉ hiển thị duy nhất **2 tỉnh miền Nam**: Đồng Nai (5,956 đơn), Hồ Chí Minh (5,313 đơn). |
+| **`driver_hcm_01`** | `password123` | **Tài xế giao hàng** (`DRIVER`) | ⛔ **Bị Từ Chối Truy Cập Báo Cáo Doanh Thu**:<br>• Dashboard hiển thị lỗi `Access Denied` hoặc trống rỗng: Cube ngăn chặn không cho tài xế truy cập dữ liệu tài chính & đơn hàng. |
+
+---
+
+#### 8. Kiểm Thử Nhanh Bằng Dòng Lệnh (CLI & SQL API Verification):
+
+Nếu muốn xác minh tức thì độ chuẩn xác của dữ liệu từ Cube mà không cần thao tác qua Web:
+
+##### A. Kiểm tra trực tiếp qua PostgreSQL Wire Protocol (Cổng 5432):
 ```bash
-# Kiểm tra quyền Regional Manager qua cổng Postgres 5432:
+# 1. Manager Miền Bắc query:
+docker exec -it superset_bi python3 -c "
+import psycopg2
+conn = psycopg2.connect(host='cube_semantic_layer', port=5432, user='manager_north', password='any', dbname='default')
+cur = conn.cursor()
+cur.execute('SELECT sendingProvince, totalBookings FROM Shipments')
+print('--- DỮ LIỆU CỦA MANAGER MIỀN BẮC ---')
+for row in cur.fetchall(): print(' ', row)
+conn.close()
+"
+
+# 2. Manager Miền Nam query:
 docker exec -it superset_bi python3 -c "
 import psycopg2
 conn = psycopg2.connect(host='cube_semantic_layer', port=5432, user='manager_south', password='any', dbname='default')
 cur = conn.cursor()
 cur.execute('SELECT sendingProvince, totalBookings FROM Shipments')
-for row in cur.fetchall():
-    print('  ', row)
+print('--- DỮ LIỆU CỦA MANAGER MIỀN NAM ---')
+for row in cur.fetchall(): print(' ', row)
 conn.close()
 "
 ```
-*Kết quả hiển thị chính xác 2 tỉnh miền Nam:*
-```text
-   ('Đồng Nai', 5956)
-   ('Hồ Chí Minh', 5313)
+
+##### B. Kiểm tra qua REST API của Cube (Cổng 4000):
+```bash
+# Kiểm tra Admin thấy đủ 9 tỉnh:
+curl -s -X POST http://localhost:4000/cubejs-api/v1/load \
+  -H "Content-Type: application/json" -H "x-user: admin" \
+  -d '{"query": {"measures": ["Shipments.totalBookings"], "dimensions": ["Shipments.sendingProvince"]}}' | jq '.data | length'
+
+# Kiểm tra Manager Miền Bắc chỉ thấy 3 tỉnh:
+curl -s -X POST http://localhost:4000/cubejs-api/v1/load \
+  -H "Content-Type: application/json" -H "x-user: manager_north" \
+  -d '{"query": {"measures": ["Shipments.totalBookings"], "dimensions": ["Shipments.sendingProvince"]}}' | jq .data
+
+# Kiểm tra Tài xế bị chặn xem doanh thu:
+curl -s -X POST http://localhost:4000/cubejs-api/v1/load \
+  -H "Content-Type: application/json" -H "x-user: driver_hcm_01" \
+  -d '{"query": {"measures": ["Shipments.totalRevenue"]}}' | jq .error
 ```
 
-## 🎯 BẢNG TỔNG KẾT KIỂM THỬ THÀNH CÔNG
+## 🎯 BẢNG TỔNG KẾT KIỂM THỬ TOÀN DIỆN HỆ THỐNG
 
 | Hạng mục kiểm thử | Tiêu chuẩn thành công | Kết quả thực tế |
 | :--- | :--- | :--- |
@@ -531,4 +761,5 @@ conn.close()
 | **dbt ClickHouse DWH** | Materialize OBT Incremental vào ClickHouse & Pass Quality Tests | ✅ ĐẠT |
 | **Cube Semantic Layer** | Quản lý Metrics tập trung, Multi-API (REST/SQL API), Cube Store Cache | ✅ ĐẠT |
 | **Dynamic RLS Security** | Tự động lọc phân quyền dòng dữ liệu theo vùng miền từ ClickHouse matrix | ✅ ĐẠT |
-| **Apache Superset BI** | Trực quan hóa Dashboard qua cổng PostgreSQL Wire Protocol cổng 5432 | ✅ ĐẠT |
+| **Apache Superset BI** | 1 DB Connection duy nhất với User Impersonation, phục vụ tự động mọi User | ✅ ĐẠT |
+

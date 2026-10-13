@@ -4,6 +4,10 @@ cubes:
 
     # 1. MEASURES (Các chỉ số đo lường)
     measures:
+      - name: count
+        type: count
+        title: Số lượng bản ghi
+
       - name: totalBookings
         type: count
         title: Tổng Số Đơn Hàng
