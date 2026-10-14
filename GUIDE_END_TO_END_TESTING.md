@@ -614,6 +614,24 @@ with app.app_context():
 4. **Table**: Chọn bảng `Shipments`.
 5. Bấm **Create Dataset and Create Chart**.
 
+##### Tự Động Đồng Bộ Metadata, Phân Loại Dimension/Measure & Chuẩn Hóa Metrics Cho User Non-Tech:
+Để đội ngũ kinh doanh / vận hành non-tech có thể dễ dàng kéo thả biểu đồ mà không cần cấu hình thủ công:
+* Chạy script tự động [sync_cube_to_superset.py](file:///home/tambt/Projects/Enterprise-Logistics-Data-Hub/cluster-4-bi/sync_cube_to_superset.py):
+  ```bash
+  docker cp cluster-4-bi/sync_cube_to_superset.py superset_bi:/app/sync_cube_to_superset.py && docker exec superset_bi python3 /app/sync_cube_to_superset.py
+  ```
+* **Kết quả đạt được ngay lập tức trên Superset**:
+  * ✅ **Tự động phân loại Dimension vs Measure**:
+    * **Dimension** (`Tỉnh`, `Vùng`, `Trạng thái`, `Ngày tháng`...): Tự động bật `Is dimension` (`groupby = True`), `Is filterable` và `Is temporal`. Xuất hiện trực tiếp trong ô chọn **DIMENSIONS** khi tạo biểu đồ.
+    * **Measure** (`Tổng Doanh Thu`, `Tổng Đơn Hàng`, `Tỷ Lệ Giao Thành Công`...): Tự động tắt `Is dimension` (`groupby = False`) để chặn kéo nhầm vào Group By gây lỗi SQL, nhưng vẫn giữ `Is filterable` để lọc theo ngưỡng số nếu cần.
+  * ✅ **Đồng bộ Saved Metrics an toàn (UPSERT)**:
+    * Tạo sẵn đầy đủ các **Saved Metrics** với công thức SQL chuẩn hóa (`SUM`, `AVG`, `MAX`, `COUNT(*)`) tương thích tuyệt đối với Cube SQL API.
+    * Cơ chế UPSERT bảo toàn ID, không làm đứt gãy các chart đang dùng và ngăn ngừa hoàn toàn lỗi `Error saving dataset: One or more metrics do not exist`.
+    * Định dạng hiển thị D3 Format chuyên nghiệp (`$,.0f` cho tiền tệ, `,.2f%` cho tỷ lệ, `,.0f` cho số lượng).
+  * ✅ Việt hóa 100% nhãn hiển thị và mô tả cột.
+  * ✅ Tự động ẩn các cột kỹ thuật Cube (`__user`, `__cubeJoinField`).
+  * ✅ Gắn huy hiệu **Certified Dataset** (Dữ liệu đã được kiểm toán tin cậy).
+
 ---
 
 #### 5. Hướng Dẫn Tạo 1 Dashboard Logistics Hoàn Chỉnh Với Các Chỉ Số Cơ Bản:
@@ -744,6 +762,91 @@ curl -s -X POST http://localhost:4000/cubejs-api/v1/load \
   -d '{"query": {"measures": ["Shipments.totalRevenue"]}}' | jq .error
 ```
 
+---
+
+#### 9. Quy Trình Đồng Bộ Hai Chiều (Bi-directional Sync): Sửa Trên Superset UI ➔ Đồng Bộ Về Code ➔ Nhờ AI Tiếp Tục Chỉnh Sửa
+
+Trong thực tế doanh nghiệp, việc thiết kế Dashboard thường kết hợp giữa:
+1. **Thiết kế trực quan trên Web UI (WYSIWYG)**: Người dùng thích kéo thả thay đổi vị trí ô, co dãn kích thước card, thử nghiệm bảng màu, font chữ hoặc tinh chỉnh nhãn trực tiếp trên màn hình Superset.
+2. **Quản trị bằng Code (Dashboard-as-Code / IaC)**: Dự án yêu cầu lưu trữ cấu hình dưới dạng mã nguồn (`create_logistics_dashboard.py`) để đưa vào Git, phục vụ tái tạo tự động, chạy CI/CD và phân quyền tự động cho hàng loạt môi trường (Dev/Staging/Prod).
+
+Để giải quyết bài toán này, hệ thống hỗ trợ **quy trình đồng bộ 2 chiều khép kín** giúp bạn tự do tinh chỉnh giao diện trên UI mà **hoàn toàn không lo bị mất thay đổi** khi nhờ AI code tiếp:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Bạn (Data Analyst / User)
+    participant UI as Superset Web UI
+    participant DB as Superset PostgreSQL DB
+    participant Script as export_dashboard_to_code.py
+    participant File as dashboard_state.json
+    participant AI as Antigravity AI Assistant
+    participant Code as create_logistics_dashboard.py
+
+    User->>UI: Kéo thả grid, đổi vị trí, sửa format biểu đồ & bấm SAVE
+    UI->>DB: Lưu layout (position_json) & cấu hình chart (slice.params)
+    User->>Script: Chạy lệnh xuất trạng thái (1 dòng lệnh duy nhất)
+    Script->>DB: Truy vấn Dashboard(id=1) và toàn bộ 15 Slices
+    Script->>File: Trích xuất trọn vẹn dữ liệu sang dashboard_state.json
+    User->>AI: "Tôi vừa sửa UI, hãy dựa trên dashboard_state.json để code tiếp tính năng X..."
+    AI->>File: Đọc vị trí, kích thước, định dạng bạn vừa chỉnh
+    AI->>Code: Cập nhật code logic mới mà BẢO TOÀN 100% thay đổi UI của bạn
+    AI->>DB: Thực thi cập nhật Dashboard mới lên hệ thống
+    DB-->>UI: Dashboard tự động nạp tính năng mới trên nền giao diện bạn đã sửa!
+```
+
+##### 📌 Bước 1: Tùy ý chỉnh sửa Dashboard trên Superset Web UI
+1. Truy cập: `http://localhost:8088/superset/dashboard/1/` (hoặc Dashboard bạn muốn sửa).
+2. **Chỉnh sửa Bố cục (Layout)**:
+   * Bấm nút **EDIT DASHBOARD** ở góc trên cùng bên phải.
+   * Kéo thả sắp xếp lại vị trí các biểu đồ, co dãn độ rộng (width) từ 1 đến 12 cột, tăng giảm chiều cao thẻ KPI.
+   * Thêm Tabs mới, đổi tên Tab, gom nhóm các biểu đồ vào Row.
+3. **Chỉnh sửa từng Biểu đồ (Chart Details)**:
+   * Bấm vào biểu tượng dấu 3 chấm `...` ở góc phải của biểu đồ ➔ Chọn **Edit chart**.
+   * Tùy chỉnh trực tiếp: đổi màu sắc (Color Palette), chỉnh định dạng số (`d3NumberFormat`), xoay góc nhãn trục X (`xAxisLabelRotation`), bật/tắt chú thích (Legend).
+   * Bấm **Save** ở góc trên ➔ Chọn **Save and go to dashboard**.
+4. **Lưu toàn bộ thay đổi**:
+   * Bấm nút **SAVE** màu xanh ở góc trên Dashboard để lưu vào Superset Database.
+
+##### 📌 Bước 2: Đồng bộ từ UI về Code (Chạy 1 dòng lệnh duy nhất)
+Mở terminal tại thư mục gốc của dự án và chạy lệnh:
+
+```bash
+docker cp cluster-4-bi/export_dashboard_to_code.py superset_bi:/tmp/export_dashboard_to_code.py && \
+docker exec -i superset_bi python3 /tmp/export_dashboard_to_code.py && \
+docker cp superset_bi:/tmp/dashboard_state.json cluster-4-bi/dashboard_state.json
+```
+
+> [!TIP]
+> **Nhờ AI chạy giúp**: Bạn chỉ cần nhắn vào khung chat: *"Tôi vừa chỉnh sửa xong giao diện trên UI, hãy chạy lệnh xuất trạng thái mới về code giúp tôi"*, AI sẽ tự động thực thi lệnh trên cho bạn trong tích tắc.
+
+File xuất `cluster-4-bi/dashboard_state.json` sẽ tự động lưu lại:
+* Toàn bộ tọa độ grid `position_json` (chính xác từng pixel và tỷ lệ cột mà bạn vừa kéo thả).
+* Toàn bộ cấu hình 15 charts trong `charts` (chứa đầy đủ `params`, `viz_type`, màu sắc và formatting mới).
+* Toàn bộ cấu hình bộ lọc động `native_filter_configuration` và CSS tùy biến `css`.
+
+##### 📌 Bước 3: Nhờ AI tiếp tục chỉnh sửa / phát triển tính năng mới
+Sau khi file `dashboard_state.json` đã được cập nhật, bạn giao việc cho AI kèm câu lệnh mẫu:
+
+> **Câu lệnh (Prompt) mẫu gửi cho AI:**
+> *"Tôi vừa tinh chỉnh lại vị trí thẻ KPI và màu sắc biểu đồ trên Superset UI (đã lưu trong file `cluster-4-bi/dashboard_state.json`). Bạn hãy đọc file này và tiếp tục code bổ sung thêm cho tôi một biểu đồ dạng Bảng phân tích chi tiết theo khách hàng vào Tab 2, đồng thời cập nhật vào `cluster-4-bi/create_logistics_dashboard.py` mà giữ nguyên các chỉnh sửa UI của tôi nhé."*
+
+AI sẽ:
+1. Đọc nội dung file `cluster-4-bi/dashboard_state.json`.
+2. Kế thừa toàn bộ bố cục, vị trí và cấu hình bạn đã tinh chỉnh trên UI.
+3. Bổ sung biểu đồ / tính năng mới vào đúng cấu trúc code và cập nhật lại vào Superset.
+
+##### 📌 Lựa chọn bổ sung: Xuất Native Dashboard của Superset (File ZIP / YAML)
+Nếu bạn muốn lưu trữ theo định dạng chuẩn của Apache Superset để chuyển sang một cụm Superset khác:
+1. Trên giao diện Dashboard, bấm biểu tượng **`...`** ở góc trên cùng bên phải màn hình.
+2. Chọn **Export dashboard**.
+3. Superset sẽ tải về máy một file `.zip` chứa các file YAML:
+   * `dashboards/Logistics_Executive_Overview.yaml`: Cấu hình Dashboard, Tabs và Metadata.
+   * `charts/*.yaml`: Cấu hình chi tiết từng biểu đồ.
+   * `datasets/*.yaml`: Cấu hình Dataset và Metrics tương ứng.
+
+---
+
 ## 🎯 BẢNG TỔNG KẾT KIỂM THỬ TOÀN DIỆN HỆ THỐNG
 
 | Hạng mục kiểm thử | Tiêu chuẩn thành công | Kết quả thực tế |
@@ -762,4 +865,5 @@ curl -s -X POST http://localhost:4000/cubejs-api/v1/load \
 | **Cube Semantic Layer** | Quản lý Metrics tập trung, Multi-API (REST/SQL API), Cube Store Cache | ✅ ĐẠT |
 | **Dynamic RLS Security** | Tự động lọc phân quyền dòng dữ liệu theo vùng miền từ ClickHouse matrix | ✅ ĐẠT |
 | **Apache Superset BI** | 1 DB Connection duy nhất với User Impersonation, phục vụ tự động mọi User | ✅ ĐẠT |
+| **Dashboard-as-Code Sync** | Đồng bộ 2 chiều (UI ↔ Code) qua `export_dashboard_to_code.py` bảo toàn thiết kế kéo thả | ✅ ĐẠT |
 

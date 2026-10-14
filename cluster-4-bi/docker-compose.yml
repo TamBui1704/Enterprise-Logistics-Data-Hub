@@ -20,10 +20,15 @@ services:
       - CUBEJS_PG_SQL_PORT=5432
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=master
+      - NODE_OPTIONS=--max-old-space-size=1024
     volumes:
       - ./cube_conf:/cube/conf
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    deploy:
+      resources:
+        limits:
+          memory: 1536M
     networks:
       - logistics_net
 
@@ -39,8 +44,15 @@ services:
       SUPERSET_SECRET_KEY: "logistics_superset_secret_key"
     volumes:
       - superset_home:/app/superset_home
+      - ./superset_patch/helpers.py:/app/superset/models/helpers.py
+      - ./create_logistics_dashboard.py:/app/create_logistics_dashboard.py
+      - ./superset_config.py:/app/pythonpath/superset_config.py
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    deploy:
+      resources:
+        limits:
+          memory: 1536M
     networks:
       - logistics_net
 

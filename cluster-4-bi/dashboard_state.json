@@ -1,0 +1,1306 @@
+{
+  "dashboard_title": "Logistics Executive Overview",
+  "slug": null,
+  "description": "Báo cáo điều hành Logistics toàn diện tích hợp Cube Semantic Layer & Row-Level Security.",
+  "css": "\n/* Chỉ áp dụng viền xanh cho KHUNG NGOÀI CÙNG của từng Card biểu đồ */\n.dashboard-component-chart-holder {\n    border-radius: 12px !important;\n    border: 2px solid #2563eb !important;\n    background-color: #ffffff !important;\n    box-shadow: 0 3px 10px rgba(37, 99, 235, 0.1) !important;\n    overflow: hidden !important;\n}\n\n/* Hover: giữ nguyên viền xanh sáng, KHÔNG đổi màu viền, không biến dạng */\n.dashboard-component-chart-holder:hover {\n    border: 2px solid #2563eb !important;\n    border-color: #2563eb !important;\n    box-shadow: 0 4px 14px rgba(37, 99, 235, 0.18) !important;\n    transform: none !important;\n}\n\n/* Bo góc cho lớp viền ảo :after của Superset */\n.dashboard-component-chart-holder:after {\n    border-radius: 12px !important;\n    border-color: #2563eb !important;\n}\n\n/* BỎ TOÀN BỘ viền trong và bo góc bên trong từng biểu đồ */\n.dashboard-component-chart-holder .dashboard-chart,\n.dashboard-component-chart-holder .chart-container,\n.dashboard-component-chart-holder .chart-slice,\n.dashboard-component-chart-holder .slice_container,\n.dashboard-component-chart-holder .slice_cell,\n.dashboard-component-chart-holder .panel-body,\n.dashboard-component-chart-holder .text-container,\n.dashboard-chart,\n.chart-container,\n.chart-slice,\n.slice_container,\n.slice_cell {\n    border-radius: 0 !important;\n    border: none !important;\n    box-shadow: none !important;\n    outline: none !important;\n}\n\n/* Tiêu đề biểu đồ sắc nét, chuyên nghiệp */\n.dashboard-component-chart-holder .header-title,\n.dashboard-component-chart-holder .header-large {\n    font-weight: 700 !important;\n    color: #1e293b !important;\n    font-size: 15px !important;\n}\n\n/* Số liệu thẻ KPI to rõ & đậm nét */\n.dashboard-component-chart-holder .header-line {\n    font-weight: 800 !important;\n    letter-spacing: -0.02em !important;\n    color: #0f172a !important;\n}\n\n/* Tab điều hướng thiết kế thanh lịch */\n.ant-tabs-nav-wrap {\n    font-size: 15px !important;\n    font-weight: 600 !important;\n    padding-bottom: 6px !important;\n}\n\n.ant-tabs-tab {\n    border-radius: 8px !important;\n    padding: 8px 18px !important;\n    transition: all 0.2s ease !important;\n}\n\n.ant-tabs-tab-active {\n    background-color: #eff6ff !important;\n    color: #2563eb !important;\n    font-weight: 700 !important;\n}\n\n/* Nút APPLY FILTERS khi chưa chọn hoặc chưa có thay đổi (disabled): màu xám thanh lịch */\nbutton[data-test=\"filter-bar__apply-button\"]:disabled,\nbutton[data-test=\"filter-bar__apply-button\"][disabled],\n.filter-apply-button:disabled,\n.filter-apply-button[disabled] {\n    background-color: #e2e8f0 !important;\n    border-color: #cbd5e1 !important;\n    color: #94a3b8 !important;\n    border-radius: 8px !important;\n    font-weight: 600 !important;\n    box-shadow: none !important;\n    cursor: not-allowed !important;\n    opacity: 0.8 !important;\n}\n\n/* Nút APPLY FILTERS khi có lựa chọn cần lọc (active): sáng màu xanh nổi bật */\nbutton[data-test=\"filter-bar__apply-button\"]:not(:disabled),\nbutton[data-test=\"filter-bar__apply-button\"]:not([disabled]),\n.filter-apply-button:not(:disabled),\n.filter-apply-button:not([disabled]) {\n    background-color: #2563eb !important;\n    border-color: #2563eb !important;\n    color: #ffffff !important;\n    border-radius: 8px !important;\n    font-weight: 600 !important;\n    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25) !important;\n    cursor: pointer !important;\n}\n\nbutton[data-test=\"filter-bar__apply-button\"]:not(:disabled):hover,\n.filter-apply-button:not(:disabled):hover {\n    background-color: #1d4ed8 !important;\n    border-color: #1d4ed8 !important;\n    box-shadow: 0 6px 16px rgba(37, 99, 235, 0.35) !important;\n}\n",
+  "position_json": {
+    "DASHBOARD_VERSION_KEY": "v2",
+    "ROOT_ID": {
+      "id": "ROOT_ID",
+      "type": "ROOT",
+      "children": [
+        "GRID_ID"
+      ]
+    },
+    "GRID_ID": {
+      "id": "GRID_ID",
+      "type": "GRID",
+      "children": [
+        "TABS-ROOT"
+      ],
+      "parents": [
+        "ROOT_ID"
+      ]
+    },
+    "TABS-ROOT": {
+      "id": "TABS-ROOT",
+      "type": "TABS",
+      "children": [
+        "TAB-OVERVIEW",
+        "TAB-OPERATIONS"
+      ],
+      "parents": [
+        "ROOT_ID",
+        "GRID_ID"
+      ],
+      "meta": {}
+    },
+    "TAB-OVERVIEW": {
+      "id": "TAB-OVERVIEW",
+      "type": "TAB",
+      "children": [
+        "ROW-KPI-1",
+        "ROW-CHARTS-1",
+        "ROW-CHARTS-2"
+      ],
+      "parents": [
+        "ROOT_ID",
+        "GRID_ID",
+        "TABS-ROOT"
+      ],
+      "meta": {
+        "text": "📊 Tổng Quan Điều Hành"
+      }
+    },
+    "ROW-KPI-1": {
+      "id": "ROW-KPI-1",
+      "type": "ROW",
+      "children": [
+        "CHART-4",
+        "CHART-5",
+        "CHART-6",
+        "CHART-7",
+        "CHART-8"
+      ],
+      "parents": [
+        "ROOT_ID",
+        "GRID_ID",
+        "TABS-ROOT",
+        "TAB-OVERVIEW"
+      ],
+      "meta": {
+        "background": "BACKGROUND_TRANSPARENT"
+      }
+    },
+    "ROW-CHARTS-1": {
+      "id": "ROW-CHARTS-1",
+      "type": "ROW",
+      "children": [
+        "CHART-9",
+        "CHART-10"
+      ],
+      "parents": [
+        "ROOT_ID",
+        "GRID_ID",
+        "TABS-ROOT",
+        "TAB-OVERVIEW"
+      ],
+      "meta": {
+        "background": "BACKGROUND_TRANSPARENT"
+      }
+    },
+    "ROW-CHARTS-2": {
+      "id": "ROW-CHARTS-2",
+      "type": "ROW",
+      "children": [
+        "CHART-11",
+        "CHART-12"
+      ],
+      "parents": [
+        "ROOT_ID",
+        "GRID_ID",
+        "TABS-ROOT",
+        "TAB-OVERVIEW"
+      ],
+      "meta": {
+        "background": "BACKGROUND_TRANSPARENT"
+      }
+    },
+    "TAB-OPERATIONS": {
+      "id": "TAB-OPERATIONS",
+      "type": "TAB",
+      "children": [
+        "ROW-KPI-2",
+        "ROW-CHARTS-3",
+        "ROW-TABLE"
+      ],
+      "parents": [
+        "ROOT_ID",
+        "GRID_ID",
+        "TABS-ROOT"
+      ],
+      "meta": {
+        "text": "🚚 Chi Tiết Vận Hành & Dịch Vụ"
+      }
+    },
+    "ROW-KPI-2": {
+      "id": "ROW-KPI-2",
+      "type": "ROW",
+      "children": [
+        "CHART-13",
+        "CHART-14",
+        "CHART-15"
+      ],
+      "parents": [
+        "ROOT_ID",
+        "GRID_ID",
+        "TABS-ROOT",
+        "TAB-OPERATIONS"
+      ],
+      "meta": {
+        "background": "BACKGROUND_TRANSPARENT"
+      }
+    },
+    "ROW-CHARTS-3": {
+      "id": "ROW-CHARTS-3",
+      "type": "ROW",
+      "children": [
+        "CHART-16",
+        "CHART-17"
+      ],
+      "parents": [
+        "ROOT_ID",
+        "GRID_ID",
+        "TABS-ROOT",
+        "TAB-OPERATIONS"
+      ],
+      "meta": {
+        "background": "BACKGROUND_TRANSPARENT"
+      }
+    },
+    "ROW-TABLE": {
+      "id": "ROW-TABLE",
+      "type": "ROW",
+      "children": [
+        "CHART-18"
+      ],
+      "parents": [
+        "ROOT_ID",
+        "GRID_ID",
+        "TABS-ROOT",
+        "TAB-OPERATIONS"
+      ],
+      "meta": {
+        "background": "BACKGROUND_TRANSPARENT"
+      }
+    },
+    "CHART-4": {
+      "id": "CHART-4",
+      "type": "CHART",
+      "children": [],
+      "parents": [
+        "ROOT_ID",
+        "GRID_ID",
+        "TABS-ROOT",
+        "TAB-OVERVIEW",
+        "ROW-KPI-1"
+      ],
+      "meta": {
+        "chartId": 4,
+        "sliceName": "Tổng Số Đơn Hàng",
+        "width": 2,
+        "height": 26
+      }
+    },
+    "CHART-5": {
+      "id": "CHART-5",
+      "type": "CHART",
+      "children": [],
+      "parents": [
+        "ROOT_ID",
+        "GRID_ID",
+        "TABS-ROOT",
+        "TAB-OVERVIEW",
+        "ROW-KPI-1"
+      ],
+      "meta": {
+        "chartId": 5,
+        "sliceName": "Tổng Doanh Thu (VNĐ)",
+        "width": 3,
+        "height": 26
+      }
+    },
+    "CHART-6": {
+      "id": "CHART-6",
+      "type": "CHART",
+      "children": [],
+      "parents": [
+        "ROOT_ID",
+        "GRID_ID",
+        "TABS-ROOT",
+        "TAB-OVERVIEW",
+        "ROW-KPI-1"
+      ],
+      "meta": {
+        "chartId": 6,
+        "sliceName": "Tổng Lợi Nhuận Gộp (VNĐ)",
+        "width": 3,
+        "height": 26
+      }
+    },
+    "CHART-7": {
+      "id": "CHART-7",
+      "type": "CHART",
+      "children": [],
+      "parents": [
+        "ROOT_ID",
+        "GRID_ID",
+        "TABS-ROOT",
+        "TAB-OVERVIEW",
+        "ROW-KPI-1"
+      ],
+      "meta": {
+        "chartId": 7,
+        "sliceName": "Biên Lợi Nhuận Gộp (%)",
+        "width": 2,
+        "height": 26
+      }
+    },
+    "CHART-8": {
+      "id": "CHART-8",
+      "type": "CHART",
+      "children": [],
+      "parents": [
+        "ROOT_ID",
+        "GRID_ID",
+        "TABS-ROOT",
+        "TAB-OVERVIEW",
+        "ROW-KPI-1"
+      ],
+      "meta": {
+        "chartId": 8,
+        "sliceName": "Tỷ Lệ Giao Thành Công (%)",
+        "width": 2,
+        "height": 26
+      }
+    },
+    "CHART-9": {
+      "id": "CHART-9",
+      "type": "CHART",
+      "children": [],
+      "parents": [
+        "ROOT_ID",
+        "GRID_ID",
+        "TABS-ROOT",
+        "TAB-OVERVIEW",
+        "ROW-CHARTS-1"
+      ],
+      "meta": {
+        "chartId": 9,
+        "sliceName": "Xu Hướng Đơn Hàng & Doanh Thu Theo Ngày",
+        "width": 7,
+        "height": 48
+      }
+    },
+    "CHART-10": {
+      "id": "CHART-10",
+      "type": "CHART",
+      "children": [],
+      "parents": [
+        "ROOT_ID",
+        "GRID_ID",
+        "TABS-ROOT",
+        "TAB-OVERVIEW",
+        "ROW-CHARTS-1"
+      ],
+      "meta": {
+        "chartId": 10,
+        "sliceName": "Cơ Cấu Doanh Thu Theo Vùng Miền",
+        "width": 5,
+        "height": 48
+      }
+    },
+    "CHART-11": {
+      "id": "CHART-11",
+      "type": "CHART",
+      "children": [],
+      "parents": [
+        "ROOT_ID",
+        "GRID_ID",
+        "TABS-ROOT",
+        "TAB-OVERVIEW",
+        "ROW-CHARTS-2"
+      ],
+      "meta": {
+        "chartId": 11,
+        "sliceName": "Doanh Thu & Lợi Nhuận Theo Tỉnh Gửi",
+        "width": 7,
+        "height": 48
+      }
+    },
+    "CHART-12": {
+      "id": "CHART-12",
+      "type": "CHART",
+      "children": [],
+      "parents": [
+        "ROOT_ID",
+        "GRID_ID",
+        "TABS-ROOT",
+        "TAB-OVERVIEW",
+        "ROW-CHARTS-2"
+      ],
+      "meta": {
+        "chartId": 12,
+        "sliceName": "Chất Lượng Giao Hàng: Thành Công vs Thất Bại Theo Vùng",
+        "width": 5,
+        "height": 48
+      }
+    },
+    "CHART-13": {
+      "id": "CHART-13",
+      "type": "CHART",
+      "children": [],
+      "parents": [
+        "ROOT_ID",
+        "GRID_ID",
+        "TABS-ROOT",
+        "TAB-OPERATIONS",
+        "ROW-KPI-2"
+      ],
+      "meta": {
+        "chartId": 13,
+        "sliceName": "Giá Trị Đơn Trung Bình - AOV (VNĐ)",
+        "width": 4,
+        "height": 26
+      }
+    },
+    "CHART-14": {
+      "id": "CHART-14",
+      "type": "CHART",
+      "children": [],
+      "parents": [
+        "ROOT_ID",
+        "GRID_ID",
+        "TABS-ROOT",
+        "TAB-OPERATIONS",
+        "ROW-KPI-2"
+      ],
+      "meta": {
+        "chartId": 14,
+        "sliceName": "Tổng Khối Lượng Vận Chuyển (kg)",
+        "width": 4,
+        "height": 26
+      }
+    },
+    "CHART-15": {
+      "id": "CHART-15",
+      "type": "CHART",
+      "children": [],
+      "parents": [
+        "ROOT_ID",
+        "GRID_ID",
+        "TABS-ROOT",
+        "TAB-OPERATIONS",
+        "ROW-KPI-2"
+      ],
+      "meta": {
+        "chartId": 15,
+        "sliceName": "Số Khách Hàng Hoạt Động",
+        "width": 4,
+        "height": 26
+      }
+    },
+    "CHART-16": {
+      "id": "CHART-16",
+      "type": "CHART",
+      "children": [],
+      "parents": [
+        "ROOT_ID",
+        "GRID_ID",
+        "TABS-ROOT",
+        "TAB-OPERATIONS",
+        "ROW-CHARTS-3"
+      ],
+      "meta": {
+        "chartId": 16,
+        "sliceName": "Hiệu Suất & Số Đơn Theo Đơn Vị Dịch Vụ",
+        "width": 7,
+        "height": 48
+      }
+    },
+    "CHART-17": {
+      "id": "CHART-17",
+      "type": "CHART",
+      "children": [],
+      "parents": [
+        "ROOT_ID",
+        "GRID_ID",
+        "TABS-ROOT",
+        "TAB-OPERATIONS",
+        "ROW-CHARTS-3"
+      ],
+      "meta": {
+        "chartId": 17,
+        "sliceName": "Cơ Cấu Đơn Hàng Theo Nhóm Trạng Thái",
+        "width": 5,
+        "height": 48
+      }
+    },
+    "CHART-18": {
+      "id": "CHART-18",
+      "type": "CHART",
+      "children": [],
+      "parents": [
+        "ROOT_ID",
+        "GRID_ID",
+        "TABS-ROOT",
+        "TAB-OPERATIONS",
+        "ROW-TABLE"
+      ],
+      "meta": {
+        "chartId": 18,
+        "sliceName": "Bảng Chi Tiết Vận Đơn Theo Tuyến Vận Chuyển",
+        "width": 12,
+        "height": 60
+      }
+    }
+  },
+  "json_metadata": {
+    "native_filter_configuration": [
+      {
+        "id": "NATIVE_FILTER-service",
+        "name": "Dịch Vụ Vận Chuyển",
+        "filterType": "filter_select",
+        "targets": [
+          {
+            "datasetId": 2,
+            "column": {
+              "name": "serviceName"
+            }
+          }
+        ],
+        "defaultDataMask": {
+          "extraFormData": {},
+          "filterState": {},
+          "ownState": {}
+        },
+        "controlValues": {
+          "enableEmptyFilter": false,
+          "defaultToFirstItem": false,
+          "multiSelect": true,
+          "searchAllOptions": false,
+          "inverseSelection": false
+        },
+        "scope": {
+          "rootPath": [
+            "ROOT_ID"
+          ],
+          "excluded": []
+        },
+        "type": "NATIVE_FILTER",
+        "cascadeParentIds": [],
+        "description": "",
+        "chartsInScope": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18
+        ],
+        "tabsInScope": []
+      },
+      {
+        "id": "NATIVE_FILTER-province",
+        "name": "Tỉnh Thành Xuất Phát",
+        "filterType": "filter_select",
+        "targets": [
+          {
+            "datasetId": 2,
+            "column": {
+              "name": "sendingProvince"
+            }
+          }
+        ],
+        "defaultDataMask": {
+          "extraFormData": {},
+          "filterState": {},
+          "ownState": {}
+        },
+        "controlValues": {
+          "enableEmptyFilter": false,
+          "defaultToFirstItem": false,
+          "multiSelect": true,
+          "searchAllOptions": false,
+          "inverseSelection": false
+        },
+        "scope": {
+          "rootPath": [
+            "ROOT_ID"
+          ],
+          "excluded": []
+        },
+        "type": "NATIVE_FILTER",
+        "cascadeParentIds": [],
+        "description": "",
+        "chartsInScope": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18
+        ],
+        "tabsInScope": []
+      },
+      {
+        "id": "NATIVE_FILTER-region",
+        "name": "Vùng Miền Gửi",
+        "filterType": "filter_select",
+        "targets": [
+          {
+            "datasetId": 2,
+            "column": {
+              "name": "sendingRegion"
+            }
+          }
+        ],
+        "defaultDataMask": {
+          "extraFormData": {},
+          "filterState": {},
+          "ownState": {}
+        },
+        "controlValues": {
+          "enableEmptyFilter": false,
+          "defaultToFirstItem": false,
+          "multiSelect": true,
+          "searchAllOptions": false,
+          "inverseSelection": false
+        },
+        "scope": {
+          "rootPath": [
+            "ROOT_ID"
+          ],
+          "excluded": []
+        },
+        "type": "NATIVE_FILTER",
+        "cascadeParentIds": [],
+        "description": "",
+        "chartsInScope": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18
+        ],
+        "tabsInScope": []
+      },
+      {
+        "id": "NATIVE_FILTER-status",
+        "name": "Nhóm Trạng Thái",
+        "filterType": "filter_select",
+        "targets": [
+          {
+            "datasetId": 2,
+            "column": {
+              "name": "statusGroup"
+            }
+          }
+        ],
+        "defaultDataMask": {
+          "extraFormData": {},
+          "filterState": {},
+          "ownState": {}
+        },
+        "controlValues": {
+          "enableEmptyFilter": false,
+          "defaultToFirstItem": false,
+          "multiSelect": true,
+          "searchAllOptions": false,
+          "inverseSelection": false
+        },
+        "scope": {
+          "rootPath": [
+            "ROOT_ID"
+          ],
+          "excluded": []
+        },
+        "type": "NATIVE_FILTER",
+        "cascadeParentIds": [],
+        "description": "",
+        "chartsInScope": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18
+        ],
+        "tabsInScope": []
+      }
+    ],
+    "timed_refresh_immune_slices": [],
+    "expanded_slices": {},
+    "refresh_frequency": 0,
+    "color_scheme": "supersetColors",
+    "cross_filters_enabled": true,
+    "chart_configuration": {
+      "4": {
+        "id": 4,
+        "crossFilters": {
+          "scope": "global",
+          "chartsInScope": [
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18
+          ]
+        }
+      },
+      "5": {
+        "id": 5,
+        "crossFilters": {
+          "scope": "global",
+          "chartsInScope": [
+            4,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18
+          ]
+        }
+      },
+      "6": {
+        "id": 6,
+        "crossFilters": {
+          "scope": "global",
+          "chartsInScope": [
+            4,
+            5,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18
+          ]
+        }
+      },
+      "7": {
+        "id": 7,
+        "crossFilters": {
+          "scope": "global",
+          "chartsInScope": [
+            4,
+            5,
+            6,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18
+          ]
+        }
+      },
+      "8": {
+        "id": 8,
+        "crossFilters": {
+          "scope": "global",
+          "chartsInScope": [
+            4,
+            5,
+            6,
+            7,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18
+          ]
+        }
+      },
+      "9": {
+        "id": 9,
+        "crossFilters": {
+          "scope": "global",
+          "chartsInScope": [
+            4,
+            5,
+            6,
+            7,
+            8,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18
+          ]
+        }
+      },
+      "10": {
+        "id": 10,
+        "crossFilters": {
+          "scope": "global",
+          "chartsInScope": [
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18
+          ]
+        }
+      },
+      "11": {
+        "id": 11,
+        "crossFilters": {
+          "scope": "global",
+          "chartsInScope": [
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18
+          ]
+        }
+      },
+      "12": {
+        "id": 12,
+        "crossFilters": {
+          "scope": "global",
+          "chartsInScope": [
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18
+          ]
+        }
+      },
+      "13": {
+        "id": 13,
+        "crossFilters": {
+          "scope": "global",
+          "chartsInScope": [
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            14,
+            15,
+            16,
+            17,
+            18
+          ]
+        }
+      },
+      "14": {
+        "id": 14,
+        "crossFilters": {
+          "scope": "global",
+          "chartsInScope": [
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            15,
+            16,
+            17,
+            18
+          ]
+        }
+      },
+      "15": {
+        "id": 15,
+        "crossFilters": {
+          "scope": "global",
+          "chartsInScope": [
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            16,
+            17,
+            18
+          ]
+        }
+      },
+      "16": {
+        "id": 16,
+        "crossFilters": {
+          "scope": "global",
+          "chartsInScope": [
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            17,
+            18
+          ]
+        }
+      },
+      "17": {
+        "id": 17,
+        "crossFilters": {
+          "scope": "global",
+          "chartsInScope": [
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            18
+          ]
+        }
+      },
+      "18": {
+        "id": 18,
+        "crossFilters": {
+          "scope": "global",
+          "chartsInScope": [
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17
+          ]
+        }
+      }
+    },
+    "global_chart_configuration": {
+      "scope": {
+        "rootPath": [
+          "ROOT_ID"
+        ],
+        "excluded": []
+      },
+      "chartsInScope": [
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18
+      ]
+    }
+  },
+  "charts": [
+    {
+      "id": 4,
+      "slice_name": "Tổng Số Đơn Hàng",
+      "viz_type": "big_number_total",
+      "params": {
+        "datasource": "2__table",
+        "viz_type": "big_number_total",
+        "metric": "totalBookings",
+        "header_font_size": 0.45,
+        "subheader_font_size": 0.15,
+        "y_axis_format": ",.0f",
+        "subheader": "Toàn bộ đơn hàng logistics"
+      }
+    },
+    {
+      "id": 5,
+      "slice_name": "Tổng Doanh Thu (VNĐ)",
+      "viz_type": "big_number_total",
+      "params": {
+        "datasource": "2__table",
+        "viz_type": "big_number_total",
+        "metric": "totalRevenue",
+        "header_font_size": 0.45,
+        "subheader_font_size": 0.15,
+        "y_axis_format": ",.0f",
+        "subheader": "Doanh thu cước vận chuyển (VNĐ)"
+      }
+    },
+    {
+      "id": 6,
+      "slice_name": "Tổng Lợi Nhuận Gộp (VNĐ)",
+      "viz_type": "big_number_total",
+      "params": {
+        "datasource": "2__table",
+        "viz_type": "big_number_total",
+        "metric": "totalProfit",
+        "header_font_size": 0.45,
+        "subheader_font_size": 0.15,
+        "y_axis_format": ",.0f",
+        "subheader": "Doanh thu - Chi phí vận hành (VNĐ)"
+      }
+    },
+    {
+      "id": 7,
+      "slice_name": "Biên Lợi Nhuận Gộp (%)",
+      "viz_type": "big_number_total",
+      "params": {
+        "datasource": "2__table",
+        "viz_type": "big_number_total",
+        "metric": "profitMarginPct",
+        "header_font_size": 0.45,
+        "subheader_font_size": 0.15,
+        "y_axis_format": ",.2f",
+        "subheader": "Tỷ suất sinh lời gộp (%)"
+      }
+    },
+    {
+      "id": 8,
+      "slice_name": "Tỷ Lệ Giao Thành Công (%)",
+      "viz_type": "big_number_total",
+      "params": {
+        "datasource": "2__table",
+        "viz_type": "big_number_total",
+        "metric": "deliverySuccessRate",
+        "header_font_size": 0.45,
+        "subheader_font_size": 0.15,
+        "y_axis_format": ",.2f",
+        "subheader": "Chỉ tiêu chất lượng SLA (%)"
+      }
+    },
+    {
+      "id": 9,
+      "slice_name": "Xu Hướng Đơn Hàng & Doanh Thu Theo Ngày",
+      "viz_type": "echarts_timeseries_bar",
+      "params": {
+        "datasource": "2__table",
+        "viz_type": "echarts_timeseries_bar",
+        "granularity_sqla": "bookingDate",
+        "time_grain_sqla": "P1D",
+        "time_range": "2023-01-01 : 2024-01-01",
+        "metrics": [
+          "totalBookings",
+          "totalRevenue"
+        ],
+        "y_axis_format": ",.0f",
+        "order_desc": false,
+        "row_limit": 500,
+        "show_legend": true,
+        "zoomable": true
+      }
+    },
+    {
+      "id": 10,
+      "slice_name": "Cơ Cấu Doanh Thu Theo Vùng Miền",
+      "viz_type": "pie",
+      "params": {
+        "datasource": "2__table",
+        "viz_type": "pie",
+        "groupby": [
+          "sendingRegion"
+        ],
+        "metric": "totalRevenue",
+        "donut": true,
+        "show_labels": true,
+        "number_format": ",.0f"
+      }
+    },
+    {
+      "id": 11,
+      "slice_name": "Doanh Thu & Lợi Nhuận Theo Tỉnh Gửi",
+      "viz_type": "echarts_timeseries_bar",
+      "params": {
+        "datasource": "2__table",
+        "viz_type": "echarts_timeseries_bar",
+        "granularity_sqla": "bookingDate",
+        "time_range": "No filter",
+        "x_axis": "sendingProvince",
+        "xAxisLabelRotation": 45,
+        "truncateXAxis": false,
+        "groupby": [],
+        "metrics": [
+          "totalRevenue",
+          "totalProfit"
+        ],
+        "orientation": "vertical",
+        "y_axis_format": ",.0f",
+        "show_legend": true,
+        "row_limit": 20
+      }
+    },
+    {
+      "id": 12,
+      "slice_name": "Chất Lượng Giao Hàng: Thành Công vs Thất Bại Theo Vùng",
+      "viz_type": "echarts_timeseries_bar",
+      "params": {
+        "datasource": "2__table",
+        "viz_type": "echarts_timeseries_bar",
+        "granularity_sqla": "bookingDate",
+        "time_range": "No filter",
+        "x_axis": "sendingRegion",
+        "groupby": [],
+        "metrics": [
+          "completedBookings",
+          "failedBookings"
+        ],
+        "y_axis_format": ",.0f",
+        "show_legend": true
+      }
+    },
+    {
+      "id": 13,
+      "slice_name": "Giá Trị Đơn Trung Bình - AOV (VNĐ)",
+      "viz_type": "big_number_total",
+      "params": {
+        "datasource": "2__table",
+        "viz_type": "big_number_total",
+        "metric": "avgOrderValue",
+        "header_font_size": 0.45,
+        "subheader_font_size": 0.15,
+        "y_axis_format": ",.0f",
+        "subheader": "Quy mô trung bình mỗi vận đơn (VNĐ)"
+      }
+    },
+    {
+      "id": 14,
+      "slice_name": "Tổng Khối Lượng Vận Chuyển (kg)",
+      "viz_type": "big_number_total",
+      "params": {
+        "datasource": "2__table",
+        "viz_type": "big_number_total",
+        "metric": "totalWeightKg",
+        "header_font_size": 0.45,
+        "subheader_font_size": 0.15,
+        "y_axis_format": ",.0f",
+        "subheader": "Tổng trọng lượng hàng (kg)"
+      }
+    },
+    {
+      "id": 15,
+      "slice_name": "Số Khách Hàng Hoạt Động",
+      "viz_type": "big_number_total",
+      "params": {
+        "datasource": "2__table",
+        "viz_type": "big_number_total",
+        "metric": "uniqueCustomers",
+        "header_font_size": 0.45,
+        "subheader_font_size": 0.15,
+        "y_axis_format": ",.0f",
+        "subheader": "Khách hàng phát sinh đơn"
+      }
+    },
+    {
+      "id": 16,
+      "slice_name": "Hiệu Suất & Số Đơn Theo Đơn Vị Dịch Vụ",
+      "viz_type": "echarts_timeseries_bar",
+      "params": {
+        "datasource": "2__table",
+        "viz_type": "echarts_timeseries_bar",
+        "granularity_sqla": "bookingDate",
+        "time_range": "No filter",
+        "x_axis": "serviceName",
+        "xAxisLabelRotation": 25,
+        "truncateXAxis": false,
+        "groupby": [],
+        "metrics": [
+          "totalBookings",
+          "completedBookings"
+        ],
+        "y_axis_format": ",.0f",
+        "show_legend": true
+      }
+    },
+    {
+      "id": 17,
+      "slice_name": "Cơ Cấu Đơn Hàng Theo Nhóm Trạng Thái",
+      "viz_type": "pie",
+      "params": {
+        "datasource": "2__table",
+        "viz_type": "pie",
+        "groupby": [
+          "statusGroup"
+        ],
+        "metric": "totalBookings",
+        "donut": true,
+        "show_labels": true,
+        "number_format": ",.0f"
+      }
+    },
+    {
+      "id": 18,
+      "slice_name": "Bảng Chi Tiết Vận Đơn Theo Tuyến Vận Chuyển",
+      "viz_type": "table",
+      "params": {
+        "datasource": "2__table",
+        "viz_type": "table",
+        "groupby": [
+          "sendingProvince",
+          "receivingProvince",
+          "serviceName",
+          "customerType"
+        ],
+        "metrics": [
+          "totalBookings",
+          "completedBookings",
+          "failedBookings",
+          "totalRevenue",
+          "totalProfit",
+          "profitMarginPct",
+          "deliverySuccessRate"
+        ],
+        "page_length": 10,
+        "order_desc": true,
+        "include_search": true,
+        "table_timestamp_format": "smart_date",
+        "show_cell_bars": false,
+        "align_pn": false,
+        "color_pn": false,
+        "column_config": {
+          "totalRevenue": {
+            "d3NumberFormat": ",.0f"
+          },
+          "totalProfit": {
+            "d3NumberFormat": ",.0f"
+          },
+          "totalBookings": {
+            "d3NumberFormat": ",.0f"
+          },
+          "completedBookings": {
+            "d3NumberFormat": ",.0f"
+          },
+          "failedBookings": {
+            "d3NumberFormat": ",.0f"
+          },
+          "profitMarginPct": {
+            "d3NumberFormat": ",.2f"
+          },
+          "deliverySuccessRate": {
+            "d3NumberFormat": ",.2f"
+          }
+        }
+      }
+    }
+  ]
+}

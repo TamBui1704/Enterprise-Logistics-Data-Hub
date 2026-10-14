@@ -2,52 +2,165 @@ cubes:
   - name: Shipments
     sql: SELECT * FROM default.obt_shipment_analytics
 
-    # 1. MEASURES (Các chỉ số đo lường)
+    # ===================================================================
+    # 1. MEASURES (Các chỉ số đo lường từ cơ bản đến phức tạp)
+    # ===================================================================
     measures:
+      # --- Chỉ số Đếm bản ghi kỹ thuật ---
       - name: count
         type: count
         title: Số lượng bản ghi
+        description: Tổng số dòng dữ liệu thực tế
 
+      # --- Khối lượng Đơn hàng ---
       - name: totalBookings
         type: count
         title: Tổng Số Đơn Hàng
+        description: Tổng số lượng đơn hàng booking được tiếp nhận trên hệ thống
 
+      - name: completedBookings
+        sql: "countIf(STATUS_GROUP = 'COMPLETED')"
+        type: number
+        title: Số Đơn Giao Thành Công
+        description: Đơn hàng đã giao thành công tới tay người nhận
+
+      - name: failedBookings
+        sql: "countIf(STATUS_GROUP = 'FAILED')"
+        type: number
+        title: Số Đơn Thất Bại / Hư Hỏng
+        description: Đơn hàng bị hoàn trả, thất lạc hoặc hư hỏng
+
+      # --- Khối Tài chính (Doanh thu, Chi phí, Lợi nhuận) ---
       - name: totalRevenue
         sql: TOTAL_REVENUE
         type: sum
-        title: Tổng Doanh Thu (VND)
+        title: Tổng Doanh Thu (VNĐ)
         format: currency
+        description: Tổng doanh thu cước vận chuyển và phụ phí thực nhận
+
+      - name: totalCost
+        sql: COST_AMOUNT
+        type: sum
+        title: Tổng Chi Phí (VNĐ)
+        format: currency
+        description: Tổng chi phí vận hành (xăng xe, bến bãi, nhân công)
 
       - name: totalProfit
         sql: PROFIT_AMOUNT
         type: sum
-        title: Tổng Lợi Nhuận (VND)
+        title: Tổng Lợi Nhuận Gộp (VNĐ)
         format: currency
+        description: Lợi nhuận gộp = Doanh thu - Chi phí
 
-    # 2. DIMENSIONS (Các chiều phân tích)
+      # --- Chỉ số Tính toán Phức tạp (Trung bình, Tỷ suất, Tỷ lệ %) ---
+      - name: avgOrderValue
+        sql: TOTAL_REVENUE
+        type: avg
+        title: Giá Trị Đơn Trung Bình (AOV)
+        format: currency
+        description: Doanh thu trung bình trên mỗi đơn hàng booking
+
+      - name: avgProfitPerOrder
+        sql: PROFIT_AMOUNT
+        type: avg
+        title: Lợi Nhuận Trung Bình / Đơn
+        format: currency
+        description: Lợi nhuận gộp trung bình tạo ra từ mỗi đơn hàng
+
+      - name: profitMarginPct
+        sql: "sum(PROFIT_AMOUNT) / NULLIF(sum(TOTAL_REVENUE), 0) * 100.0"
+        type: number
+        title: Biên Lợi Nhuận Gộp (%)
+        description: Tỷ lệ phần trăm lợi nhuận trên doanh thu
+
+      - name: deliverySuccessRate
+        sql: "countIf(STATUS_GROUP = 'COMPLETED') / NULLIF(count(*), 0) * 100.0"
+        type: number
+        title: Tỷ Lệ Giao Thành Công (%)
+        description: Phần trăm đơn hàng hoàn thành trên tổng đơn tiếp nhận
+
+      # --- Khối lượng Vận chuyển (Tải trọng) ---
+      - name: totalWeightKg
+        sql: "WEIGHT_GRAM / 1000.0"
+        type: sum
+        title: Tổng Khối Lượng Vận Chuyển (kg)
+        description: Tổng trọng lượng bưu phẩm đã luân chuyển
+
+      - name: avgWeightKg
+        sql: "WEIGHT_GRAM / 1000.0"
+        type: avg
+        title: Khối Lượng Trung Bình / Đơn (kg)
+        description: Trọng lượng trung bình của một kiện hàng
+
+      # --- Khách hàng riêng biệt ---
+      - name: uniqueCustomers
+        sql: CUSTOMER_ID
+        type: count_distinct
+        title: Số Lượng Khách Hàng Riêng Biệt
+        description: Số lượng mã khách hàng độc nhất phát sinh giao dịch
+
+    # ===================================================================
+    # 2. DIMENSIONS (Các chiều phân tích kinh doanh)
+    # ===================================================================
     dimensions:
+      # Định danh
       - name: bookingId
         sql: BOOKING_ID
         type: string
         primary_key: true
         title: Mã Đơn Hàng
 
+      # Thời gian
       - name: bookingDate
         sql: BOOKING_DATE
         type: time
         title: Ngày Gửi Hàng
 
+      # Địa bàn gửi hàng
       - name: sendingProvince
         sql: SENDING_PROVINCE
         type: string
-        title: Tỉnh Gửi
+        title: Tỉnh Gửi Hàng
 
+      - name: sendingRegion
+        sql: SENDING_REGION
+        type: string
+        title: Vùng Miền Gửi
+
+      # Địa bàn nhận hàng
       - name: receivingProvince
         sql: RECEIVING_PROVINCE
         type: string
-        title: Tỉnh Nhận
+        title: Tỉnh Nhận Hàng
 
+      - name: receivingRegion
+        sql: RECEIVING_REGION
+        type: string
+        title: Vùng Miền Nhận
+
+      # Trạng thái vận hành
       - name: statusName
         sql: STATUS_NAME
         type: string
-        title: Trạng Thái Đơn
+        title: Trạng Thái Chi Tiết
+
+      - name: statusGroup
+        sql: STATUS_GROUP
+        type: string
+        title: Nhóm Trạng Thái
+
+      # Dịch vụ & Khách hàng
+      - name: serviceName
+        sql: SERVICE_NAME
+        type: string
+        title: Gói Dịch Vụ
+
+      - name: customerName
+        sql: CUSTOMER_NAME
+        type: string
+        title: Tên Khách Hàng
+
+      - name: customerType
+        sql: CUSTOMER_TYPE
+        type: string
+        title: Phân Khúc Khách Hàng
