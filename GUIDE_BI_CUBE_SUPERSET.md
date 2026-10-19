@@ -1,206 +1,224 @@
-# 📊 Hướng Dẫn Thông Luồng BI Enterprise Nâng Cao: Keycloak IAM (Google Authenticator 2FA) + ClickHouse Permissions + Cube.js RLS + Apache Superset
+# 📊 Cẩm Nang Triển Khai BI Enterprise: Keycloak OIDC SSO (2FA OTP & Role Sync) + Apache Superset + Cube.js + ClickHouse RLS
 
-> [!NOTE]
-> **Tài Liệu Mở Rộng Dành Cho Môi Trường Doanh Nghiệp (Enterprise IAM / SSO):**
-> Tài liệu này hướng dẫn kịch bản triển khai **Đầy Đủ Cụm 0 (Keycloak IAM)** với xác thực 2 lớp Google Authenticator (TOTP), Single Sign-On (SSO) và OIDC Token.
-> *(Nếu bạn chỉ muốn **kiểm thử luồng BI độc lập, nhanh gọn không cần Keycloak**, vui lòng xem trực tiếp **Bước 11** trong file [GUIDE_END_TO_END_TESTING.md](file:///home/tambt/Projects/Enterprise-Logistics-Data-Hub/GUIDE_END_TO_END_TESTING.md))*.
+Tài liệu này hướng dẫn chi tiết từng bước (A-Z) để bạn thực nghiệm **xác thực tập trung qua Keycloak (OIDC SSO)** với **bảo mật 2 lớp 2FA Google Authenticator**, **tự động đồng bộ quyền (Role Mapping)** từ Keycloak sang Superset, tự động hóa cài đặt thư viện `Authlib` qua `Dockerfile` & `requirements.txt`, và kết nối bảo mật với **Cube.dev** & **ClickHouse RLS**.
 
 ---
 
-## 1. Kiến Trúc Bảo Mật & Thông Luồng Dữ Liệu (End-to-End Architecture)
-
-Trong kiến trúc Modern Data Stack Enterprise, việc phân quyền dữ liệu (Row-Level Security - RLS) **bắt buộc phải diễn ra tại Tầng Ngữ Nghĩa (Cube.js Semantic Layer)** thay vì tầng hiển thị (Superset) hay tầng lưu trữ thô. Điều này đảm bảo mọi kênh truy cập (Dashboard Superset, Excel Ad-hoc Pivot qua SQL API, hoặc AI Agents qua REST API) đều tuân thủ chung một chính sách bảo mật duy nhất.
+## 1. Kiến Trúc Thông Luồng Xác Thực & Phân Quyền (End-to-End Flow)
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor User as Người dùng / DA / AI Agent
-    participant KC as Keycloak IAM (Cluster 0)
-    participant SS as Apache Superset / Excel / PowerBI
-    participant Cube as Cube.js Semantic Layer (Cluster 4)
-    participant CH as ClickHouse DWH (Cluster 2)
+    actor User as Người dùng (Trình duyệt)
+    participant SS as Apache Superset (:8088)
+    participant KC as Keycloak IAM (:8080)
+    participant Cube as Cube.js Semantic Layer (:15432 / :4000)
+    participant CH as ClickHouse DWH (:8123)
 
-    Note over User, KC: 1. Đăng nhập & Xác thực 2FA
-    User->>KC: Đăng nhập (Username/Pass + Google Authenticator OTP / Google Auth)
-    KC-->>User: Cấp OIDC JWT Token (Chứa preferred_username)
-
-    Note over User, SS: 2. Truy cập BI Dashboard
-    User->>SS: Truy cập Superset (SSO qua Keycloak)
-    SS->>Cube: Kết nối PostgreSQL SQL API (Port 5432/15432) với Username & Password
-
-    Note over Cube, CH: 3. Tầng Ngữ Nghĩa Xử Lý Authentication & Dynamic RLS
-    Cube->>KC: Gửi Token / Auth Check xác minh Credential với Keycloak (nếu có)
-    KC-->>Cube: Xác thực OK
-    Cube->>CH: Query `SELECT role, province_access FROM dim_user_permissions WHERE username = '...'`
-    CH-->>Cube: Trả về `province_access: ['Hồ Chí Minh', 'Đồng Nai']`
-    Cube->>Cube: Nạp quyền vào `securityContext` & Thực thi `queryRewrite`
-
-    Note over Cube, CH: 4. Truy vấn Dữ liệu Đã Khóa RLS
-    Cube->>CH: Gửi SQL Đã Kẹp Điều Kiện `WHERE SENDING_PROVINCE IN ('Hồ Chí Minh', 'Đồng Nai')`
-    CH-->>Cube: Trả về kết quả đã lọc an toàn
-    Cube-->>SS: Bơm kết quả cho Superset / Excel / AI Agent
+    User->>SS: 1. Truy cập http://localhost:8088/login/
+    SS-->>User: 2. Hiển thị nút "Sign in with Keycloak"
+    User->>KC: 3. Chuyển hướng sang trang đăng nhập Keycloak (Realm logistics)
+    Note over User, KC: Nhập user/pass + 2FA Google Authenticator (OTP)
+    KC-->>SS: 4. Cấp OIDC Token đính kèm Roles (ví dụ: 'admin')
+    SS->>SS: 5. CustomSecurityManager bóc tách Token & Tự động gán quyền tương ứng (Admin / Gamma)
+    User->>SS: 6. Mở Dashboard Logistics
+    SS->>Cube: 7. Kết nối SQL API (Port 15432) với Username của người đang đăng nhập (Impersonation)
+    Cube->>CH: 8. Tra cứu ma trận dim_user_permissions theo Username
+    CH-->>Cube: 9. Trả về province_access (ví dụ: ['Hồ Chí Minh', 'Đồng Nai'])
+    Cube->>Cube: 10. Thực thi queryRewrite chèn bộ lọc RLS tự động
+    Cube-->>SS: 11. Trả về số liệu đã được lọc đúng địa bàn cho Superset hiển thị!
 ```
 
 ---
 
-## 2. Cấu Hình Keycloak IAM Server (Cluster 0 - IAM)
+## 2. Quản Lý Thư Viện Tự Động (Dockerfile & requirements.txt)
 
-Keycloak đóng vai trò là **Identity Provider (IdP)** trung tâm cho toàn bộ Data Hub.
+Để **không bao giờ phải chạy lệnh `docker exec pip install` thủ công**, dự án đã được đóng gói chuẩn DevOps tại thư mục `cluster-4-bi`:
 
-### 2.1. Khởi chạy Cụm IAM
+* **`cluster-4-bi/requirements.txt`**: Khai báo `Authlib>=1.3.0`.
+* **`cluster-4-bi/Dockerfile`**: Tự động cài đặt dependencies khi build.
+* **`cluster-4-bi/docker-compose.yml`**: Tự động build và chạy image `superset-enterprise:3.0.2`:
+  ```yaml
+    superset:
+      build:
+        context: .
+        dockerfile: Dockerfile
+      image: superset-enterprise:3.0.2
+      container_name: superset_bi
+      ...
+      environment:
+        ENABLE_KEYCLOAK: "true"
+        KEYCLOAK_INTERNAL_URL: "http://keycloak:8080"
+        KEYCLOAK_EXTERNAL_URL: "http://localhost:8080"
+        KEYCLOAK_REALM: "logistics"
+        KEYCLOAK_CLIENT_ID: "superset"
+        KEYCLOAK_CLIENT_SECRET: "super-secret-keycloak-client-secret"
+  ```
+
+---
+
+## 3. Các Bước Thực Nghiệm Từng Bước (Hands-on Steps)
+
+### BƯỚC 1: Khởi động Cụm Keycloak IAM (`cluster-0-iam`)
+Từ thư mục gốc dự án:
 ```bash
-cd cluster-0-iam && docker compose up -d
+cd cluster-0-iam
+docker compose up -d
+cd ..
 ```
-* Keycloak Console: `http://localhost:8080` (Tài khoản mặc định: `admin` / `admin`).
-
-### 2.2. Cấu hình Bảo Mật 2 Lớp (2FA / Google Authenticator OTP)
-1. Đăng nhập vào Keycloak Admin Console.
-2. Tại menu bên trái, chọn **Realm Settings** $\rightarrow$ chọn tab **Authentication**.
-3. Chọn tab **Required Actions**.
-4. Tìm mục **Configure OTP** $\rightarrow$ Tích chọn **Enabled** và **Set Default Action**.
-5. *Kết quả:* Khi bất kỳ người dùng nào đăng nhập lần đầu, Keycloak sẽ bắt buộc họ sử dụng điện thoại quét mã QR bằng ứng dụng **Google Authenticator** (hoặc FreeOTP) và nhập mã 6 chữ số TOTP trước khi vào hệ thống.
-
-### 2.3. Cấu hình Google Login (Google Identity Provider)
-1. Truy cập [Google Cloud Console](https://console.cloud.google.com/) $\rightarrow$ **APIs & Services** $\rightarrow$ **Credentials**.
-2. Tạo **OAuth 2.0 Client ID** (Web application).
-3. Đặt Authorized redirect URIs: `http://localhost:8080/realms/master/broker/google/endpoint`.
-4. Lấy `Client ID` và `Client Secret`.
-5. Trong Keycloak Console: Vào **Identity Providers** $\rightarrow$ Chọn **Google** $\rightarrow$ Dán `Client ID` và `Client Secret` $\rightarrow$ Bấm **Save**.
-
-### 2.4. Đăng Ký OIDC Clients cho Superset & Cube
-* **Client 1: `superset`**
-  * Client ID: `superset`
-  * Client Protocol: `openid-connect`
-  * Access Type: `confidential`
-  * Valid Redirect URIs: `http://localhost:8088/oauth-authorized/keycloak`
-* **Client 2: `cube`**
-  * Client ID: `cube`
-  * Client Protocol: `openid-connect`
-  * Direct Access Grants Enabled: `true` (Cho phép xác thực tài khoản qua API).
+*Kiểm tra:* Mở trình duyệt truy cập `http://localhost:8080` $\rightarrow$ Thấy màn hình chào mừng của Keycloak.
 
 ---
 
-## 3. Thiết Kế Bảng Phân Quyền (`dim_user_permissions`) trên ClickHouse
+### BƯỚC 2: Tạo Realm Mới Mang Tên `logistics` (Chuẩn Enterprise)
 
-Thay vì fix cứng quyền trong code, ma trận phân quyền người dùng được lưu trữ trực tiếp tại Data Warehouse ClickHouse dưới dạng bảng Dimension. Data Engineer có thể dùng dbt hoặc nạp từ script [init_permissions.sql](file:///home/tambt/Projects/Enterprise-Logistics-Data-Hub/cluster-2-lakehouse-dwh/clickhouse_config/init_permissions.sql):
-
-```bash
-docker exec -i clickhouse_dwh clickhouse-client < cluster-2-lakehouse-dwh/clickhouse_config/init_permissions.sql
-```
-
-Bảng phân quyền có cấu trúc:
-```sql
-CREATE TABLE IF NOT EXISTS default.dim_user_permissions (
-    username String,                -- Username / Email khớp với Keycloak (VD: manager_south)
-    role String,                    -- Vai trò: ADMIN, REGIONAL_MANAGER, DRIVER, STAFF
-    province_access Array(String),  -- Mảng danh sách tỉnh thành được phép xem (hoặc ['ALL'])
-    updated_at DateTime DEFAULT now()
-) ENGINE = MergeTree()
-ORDER BY username;
-```
+1. Đăng nhập Keycloak Admin Console: **`http://localhost:8080/admin/`** (Tài khoản: `admin` / `admin`).
+2. Nhìn lên góc trên cùng bên trái màn hình, click vào menu trỏ xuống chữ **`master`** $\rightarrow$ Bấm nút **`Create Realm`**.
+3. Điền thông tin:
+   * **Realm name:** `logistics`
+   * **Enabled:** Bật `ON`
+4. Bấm nút **`Create`** màu xanh.
+*(Từ bước này trở đi, mọi cấu hình Client, Role và User đều nằm bên trong Realm **`logistics`**).*
 
 ---
 
-## 4. Cấu Hình Cửa Khẩu Bảo Mật Cube.js (Semantic Layer)
-
-Mã nguồn tại [cube.js](file:///home/tambt/Projects/Enterprise-Logistics-Data-Hub/cluster-4-bi/cube_conf/cube.js) đóng vai trò là "Cửa khẩu Security", thực hiện các nhiệm vụ:
-1. **Xác thực Credential** của User với Keycloak IAM (hoặc fallback khi chạy dev).
-2. **Truy vấn ClickHouse** lấy danh sách tỉnh thành được phân quyền cho User và nạp vào `securityContext`.
-3. **Thực thi `queryRewrite`**: Tự động chặn lọc dòng dữ liệu theo tỉnh thành đối với MỌI truy vấn (REST API, GraphQL, và SQL API giả lập PostgreSQL).
-
-### 4.1. Schema YAML Định Nghĩa Chỉ Số Logistics ([Shipments.yml](file:///home/tambt/Projects/Enterprise-Logistics-Data-Hub/cluster-4-bi/cube_conf/schema/Shipments.yml))
-
-```yaml
-cubes:
-  - name: Shipments
-    sql: SELECT * FROM default.obt_shipment_analytics
-
-    measures:
-      - name: totalBookings
-        type: count
-        title: Tổng Số Đơn Hàng
-
-      - name: totalRevenue
-        sql: TOTAL_REVENUE
-        type: sum
-        title: Tổng Doanh Thu (VND)
-        format: currency
-
-      - name: totalProfit
-        sql: PROFIT_AMOUNT
-        type: sum
-        title: Tổng Lợi Nhuận (VND)
-        format: currency
-
-    dimensions:
-      - name: bookingId
-        sql: BOOKING_ID
-        type: string
-        primary_key: true
-        title: Mã Đơn Hàng
-
-      - name: bookingDate
-        sql: BOOKING_DATE
-        type: time
-        title: Ngày Gửi Hàng
-
-      - name: sendingProvince
-        sql: SENDING_PROVINCE
-        type: string
-        title: Tỉnh Gửi
-
-      - name: receivingProvince
-        sql: RECEIVING_PROVINCE
-        type: string
-        title: Tỉnh Nhận
-
-      - name: statusName
-        sql: STATUS_NAME
-        type: string
-        title: Trạng Thái Đơn
-```
+### BƯỚC 3: Tạo Client `superset` trong Realm `logistics`
+1. Đảm bảo ở góc trên bên trái đang chọn Realm **`logistics`**.
+2. Vào menu **Clients** $\rightarrow$ Bấm **Create client**:
+   * **General Settings**:
+     * Client type: `OpenID Connect`
+     * Client ID: `superset`
+     * Name: `Apache Superset BI`
+     * Bấm **Next**.
+   * **Capability config**:
+     * Client authentication: Bật **ON** (để chế độ Confidential).
+     * Authentication flow: Tích chọn **Standard flow**.
+     * Bấm **Next**.
+   * **Login settings**:
+     * Root URL: `http://localhost:8088`
+     * Valid redirect URIs: `http://localhost:8088/oauth-authorized/keycloak`
+     * Valid post logout redirect URIs: `http://localhost:8088/*`
+     * Web origins: `http://localhost:8088`
+     * Bấm **Save**.
+3. Chuyển sang tab **Credentials**:
+   * Copy chuỗi **Client Secret** (ví dụ: `gT3k9...`).
+   * *(Nếu muốn dùng secret cố định cho tiện, bạn có thể dán `super-secret-keycloak-client-secret` hoặc cập nhật chuỗi vừa copy vào biến `KEYCLOAK_CLIENT_SECRET` trong file `cluster-4-bi/docker-compose.yml`)*.
 
 ---
 
-## 5. Khởi Chạy & Kết Nối Apache Superset BI
+### BƯỚC 4: Tạo Roles và Đồng Bộ Quyền Sang Superset (Role Mapping)
 
-### 5.1. Khởi động Cụm 4
-```bash
-cd cluster-4-bi && docker compose up -d
-```
-Cổng dịch vụ:
-* **Cube Developer Playground & REST API**: `http://localhost:4000`
-* **Apache Superset Web UI**: `http://localhost:8088` (Tài khoản: `admin` / `admin`)
-* **Cube SQL API (PostgreSQL Wire Protocol)**:
-  * Từ container Superset: `cube_semantic_layer:5432`
-  * Từ máy host (DBeaver, PowerBI): `localhost:15432`
+Đây là bước giúp Superset **tự động biết ai là Admin, ai là Phân tích viên (Alpha), ai là Người xem (Gamma)** ngay khi đăng nhập:
 
-### 5.2. Kết nối Superset vào Cube Semantic Layer
-1. Mở trình duyệt truy cập: `http://localhost:8088` $\rightarrow$ Đăng nhập `admin` / `admin`.
-2. Chọn biểu tượng **Settings (bánh răng)** góc trên bên phải $\rightarrow$ Chọn **Database Connections** $\rightarrow$ Bấm **+ Database**.
-3. Chọn loại Database: **PostgreSQL** (Giao thức giả lập chuẩn của Cube SQL API).
-4. Điền chuỗi **SQLAlchemy URI**:
-   ```text
-   postgresql://manager_south:<password>@cube_semantic_layer:5432/default
+1. Trong Realm **`logistics`**, vào menu **Realm roles** (bên trái) $\rightarrow$ Bấm **Create role**:
+   * Tạo Role 1: **`admin`** (Quản trị viên tối cao)
+   * Tạo Role 2: **`superset_alpha`** (Phân tích viên được tạo biểu đồ mới)
+2. **Cơ chế ánh xạ tự động đã được lập trình sẵn trong `cluster-4-bi/superset_config.py`:**
+   ```python
+   AUTH_ROLES_SYNC_AT_LOGIN = True
+   AUTH_ROLES_MAPPING = {
+       "admin": ["Admin"],            # Role 'admin' trên Keycloak -> Trao quyền 'Admin' Superset
+       "superset_alpha": ["Alpha"],   # Role 'superset_alpha' -> Trao quyền 'Alpha'
+       "manager": ["Gamma"],          # Role xem báo cáo
+   }
    ```
-5. Bấm **Test Connection** $\rightarrow$ Thấy thông báo màu xanh `Connection looks good!` $\rightarrow$ Bấm **Connect**.
-6. Vào mục **SQL Lab** $\rightarrow$ **SQL Editor** $\rightarrow$ Chạy truy vấn:
-   ```sql
-   SELECT sendingProvince, totalBookings, totalRevenue FROM Shipments;
+
+---
+
+### BƯỚC 5: (Tùy chọn) Kích Hoạt Bảo Mật 2 Lớp (2FA / Google Authenticator OTP)
+
+1. Đảm bảo đang chọn Realm **`logistics`** $\rightarrow$ Vào menu **Authentication** (bên trái).
+2. Chọn tab **Required actions**.
+3. Tìm dòng **Configure OTP**:
+   * Tích chọn cột **Set as default action**.
+4. *Kết quả:* Mọi tài khoản khi đăng nhập lần đầu tiên sẽ bắt buộc phải dùng ứng dụng Google Authenticator trên điện thoại quét mã QR.
+
+---
+
+### BƯỚC 6: Tạo Các Tài Khoản Người Dùng Mẫu & Gán Quyền Trên Keycloak
+
+Vào menu **Users** (trong Realm `logistics`) $\rightarrow$ Bấm **Add user**:
+
+1. **Tài khoản Quản trị viên (Admin):**
+   * Username: `admin`
+   * Email: `admin@logistics.com`
+   * First Name: `Admin`, Last Name: `Logistics` $\rightarrow$ Bấm **Create**.
+   * Vào tab **Credentials** $\rightarrow$ Đặt Password: `admin` $\rightarrow$ Tắt cờ **Temporary** $\rightarrow$ Bấm **Save**.
+   * 👉 **Gán quyền Admin:** Chuyển sang tab **Role mapping** $\rightarrow$ Bấm **Assign role** $\rightarrow$ Tích chọn role **`admin`** $\rightarrow$ Bấm **Assign**.
+
+2. **Tài khoản Trưởng vùng Miền Bắc:**
+   * Username: `manager_north`
+   * Email: `manager_north@logistics.com`
+   * First Name: `North`, Last Name: `Manager` $\rightarrow$ Bấm **Create**.
+   * Vào tab **Credentials** $\rightarrow$ Đặt Password: `password123` $\rightarrow$ Tắt cờ **Temporary** $\rightarrow$ Bấm **Save**.
+   *(Không cần gán role gì, Superset sẽ tự động gán vai trò người xem `Gamma`)*.
+
+3. **Tài khoản Trưởng vùng Miền Nam:**
+   * Username: `manager_south`
+   * Email: `manager_south@logistics.com`
+   * First Name: `South`, Last Name: `Manager` $\rightarrow$ Bấm **Create**.
+   * Vào tab **Credentials** $\rightarrow$ Đặt Password: `password123` $\rightarrow$ Tắt cờ **Temporary** $\rightarrow$ Bấm **Save**.
+
+4. **Tài khoản Tài xế:**
+   * Username: `driver_hcm_01`
+   * Email: `driver01@logistics.com`
+   * First Name: `Driver`, Last Name: `HCM` $\rightarrow$ Bấm **Create**.
+   * Vào tab **Credentials** $\rightarrow$ Đặt Password: `password123` $\rightarrow$ Tắt cờ **Temporary** $\rightarrow$ Bấm **Save**.
+
+---
+
+### BƯỚC 7: Khởi Động & Đồng Bộ Cụm BI (`cluster-4-bi`)
+1. Khởi động container Superset để nhận cấu hình Realm `logistics`:
+   ```bash
+   cd cluster-4-bi
+   docker compose up -d
+   cd ..
    ```
-   *Dữ liệu trả về sẽ tự động bị giới hạn duy nhất tại 2 tỉnh Hồ Chí Minh và Đồng Nai theo đúng quyền hạn!*
+2. Chạy file khởi tạo metadata database (nếu dựng môi trường mới):
+   ```bash
+   ./cluster-4-bi/init_superset.sh
+   ```
 
 ---
 
-## 6. Bảng Tổng Hợp Kiểm Thử Kịch Bản Enterprise
-
-| Kịch Bản | Thao Tác | Kết Quả Kỳ Vọng |
-| :--- | :--- | :--- |
-| **1. Đăng nhập Keycloak 2FA** | Truy cập Keycloak với user `manager_south` lần đầu. | Keycloak yêu cầu quét mã QR bằng Google Authenticator và nhập mã OTP 6 chữ số thành công. |
-| **2. Admin Query Toàn Quốc** | Dùng user `admin` query chỉ số qua SQL API hoặc Playground (`http://localhost:4000`). | Cube sinh câu lệnh SQL chọc xuống ClickHouse **không có WHERE lọc tỉnh**, trả về đầy đủ 9 tỉnh toàn quốc (50,101 đơn hàng). |
-| **3. Manager Miền Nam Query (RLS)** | Dùng user `manager_south` query qua SQL API (`cube_semantic_layer:5432`). | Cube tự động rewrite SQL thành: `WHERE sendingProvince IN ('Hồ Chí Minh', 'Đồng Nai')`, chỉ hiển thị số liệu các tỉnh phía Nam. |
-| **4. AI Agent Truy Cấp REST API** | AI Agent gửi HTTP Request: <br>`POST http://localhost:4000/cubejs-api/v1/load` <br>kèm Header `Authorization: Bearer <Keycloak_JWT>`. | Cube giải mã JWT token, kiểm tra ma trận `dim_user_permissions` ở ClickHouse và trả về kết quả JSON đã được lọc RLS chính xác. |
+### BƯỚC 8: Thử Nghiệm Đăng Nhập & Đồng Bộ Quyền Thực Tế Trên Superset
+1. Mở trình duyệt ẩn danh (Incognito) truy cập: **`http://localhost:8088/login/`**.
+2. Bấm vào nút: **`Sign In with keycloak`** (kèm icon chìa khóa 🔑).
+3. **Thử nghiệm 1 (Đăng nhập Admin - Kiểm tra cấp quyền Admin tự động):**
+   * Đăng nhập `admin` / `admin`.
+   * **Kết quả:** Nhờ có Role Mapping, Superset tự động gán quyền **`Admin`** tối cao (bạn sẽ thấy đầy đủ menu *Settings*, *Database Connections*, *List Users*...).
+4. **Thử nghiệm 2 (Đăng nhập Trưởng vùng - Kiểm tra quyền Gamma & RLS):**
+   * Mở cửa sổ ẩn danh khác, đăng nhập `manager_south` / `password123`.
+   * **Kết quả:** Vào Superset với vai trò **`Gamma`** (`South Manager`).
 
 ---
 
-🎉 **Hoàn tất!** Hệ thống đạt chuẩn bảo mật cấp Doanh nghiệp: Keycloak 2FA (Google Authenticator) quản lý SSO $\rightarrow$ ClickHouse lưu ma trận phân quyền $\rightarrow$ Cube.js thực thi RLS động tại Semantic Layer $\rightarrow$ Superset & AI Agents khai thác dữ liệu an toàn tuyệt đối!
+### BƯỚC 9: Kiểm Thử Kết Nối Bảo Mật Với Cube.js & ClickHouse RLS
+
+1. **Đảm bảo ClickHouse có ma trận phân quyền:**
+   ```bash
+   docker exec -i clickhouse_dwh clickhouse-client < cluster-2-lakehouse-dwh/clickhouse_config/init_permissions.sql
+   ```
+2. **Khởi tạo Dashboard và liên kết Cube:**
+   ```bash
+   docker exec -it superset_bi python /app/create_logistics_dashboard.py
+   ```
+3. Khi `manager_south` xem Dashboard trên Superset:
+   * Superset mạo danh user `manager_south` gửi query sang Cube.js SQL API (cổng 15432).
+   * Cube.js đọc username `manager_south`, tra cứu ClickHouse thấy quyền: `province_access: ['Hồ Chí Minh', 'Đồng Nai']`.
+   * Cube.js tự động tiêm `WHERE sendingProvince IN ('Hồ Chí Minh', 'Đồng Nai')`.
+   * Dashboard chỉ hiển thị dữ liệu của 2 tỉnh phía Nam!
+
+---
+
+## 4. Lưu Trữ và Đẩy (Push) Lên GitHub
+
+Sau khi hoàn tất thử nghiệm, lưu lại toàn bộ tiến độ lên nhánh `feature/enterprise-keycloak-sso`:
+
+```bash
+git status
+git add cluster-4-bi/
+git add GUIDE_BI_CUBE_SUPERSET.md
+git commit -m "feat(iam): add custom security manager for keycloak role mapping and sync"
+git push origin feature/enterprise-keycloak-sso
+```

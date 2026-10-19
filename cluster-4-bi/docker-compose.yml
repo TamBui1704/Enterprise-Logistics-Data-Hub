@@ -19,7 +19,7 @@ services:
       - CUBEJS_API_SECRET=logistics-super-secret
       - CUBEJS_PG_SQL_PORT=5432
       - KEYCLOAK_URL=http://keycloak:8080
-      - KEYCLOAK_REALM=master
+      - KEYCLOAK_REALM=logistics
       - NODE_OPTIONS=--max-old-space-size=1024
     volumes:
       - ./cube_conf:/cube/conf
@@ -36,12 +36,21 @@ services:
   # 2. Apache Superset (Visual BI Dashboard & Self-service Analytics)
   # -------------------------------------------------------------------
   superset:
-    image: apache/superset:3.0.2
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: superset-enterprise:3.0.2
     container_name: superset_bi
     ports:
       - "8088:8088"
     environment:
-      SUPERSET_SECRET_KEY: "logistics_superset_secret_key"
+      SUPERSET_SECRET_KEY: "eoHUQRNM9qxa4XnYvz53rHqf7x3ZRccQ"
+      ENABLE_KEYCLOAK: "true"
+      KEYCLOAK_INTERNAL_URL: "http://keycloak:8080"
+      KEYCLOAK_EXTERNAL_URL: "http://localhost:8080"
+      KEYCLOAK_REALM: "logistics"
+      KEYCLOAK_CLIENT_ID: "superset"
+      KEYCLOAK_CLIENT_SECRET: "super-secret-keycloak-client-secret"
     volumes:
       - superset_home:/app/superset_home
       - ./superset_patch/helpers.py:/app/superset/models/helpers.py
