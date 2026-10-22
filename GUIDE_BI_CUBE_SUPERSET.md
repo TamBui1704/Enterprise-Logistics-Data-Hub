@@ -92,7 +92,7 @@ cd ..
      * Bấm **Next**.
    * **Capability config**:
      * Client authentication: Bật **ON** (để chế độ Confidential).
-     * Authentication flow: Tích chọn **Standard flow**.
+     * Authentication flow: Tích chọn cả **Standard flow** và **Direct access grants** (để vừa đăng nhập web vừa cho phép lấy token trực tiếp qua API/Postman).
      * Bấm **Next**.
    * **Login settings**:
      * Root URL: `http://localhost:8088`
@@ -208,6 +208,200 @@ Vào menu **Users** (trong Realm `logistics`) $\rightarrow$ Bấm **Add user**:
    * Cube.js đọc username `manager_south`, tra cứu ClickHouse thấy quyền: `province_access: ['Hồ Chí Minh', 'Đồng Nai']`.
    * Cube.js tự động tiêm `WHERE sendingProvince IN ('Hồ Chí Minh', 'Đồng Nai')`.
    * Dashboard chỉ hiển thị dữ liệu của 2 tỉnh phía Nam!
+
+---
+
+
+---
+
+## 5. Hướng Dẫn Toàn Diện: Xác Thực Cube.dev API, Cấp Quyền Cho Đội AI & Kiểm Thử Bằng Postman
+
+Mục này giải thích bản chất kiến trúc xác thực của Cube.dev, so sánh với cách làm truyền thống (MD5 Timestamp), chi tiết các loại API và hướng dẫn thực hành kiểm thử từ A-Z trên Postman cho cả 2 kịch bản: **Không có Keycloak** và **Có Keycloak**.
+
+---
+
+### 5.1. Bản Chất Xác Thực: MD5 Timestamp (Truyền Thống) vs. JWT HS256 (Cube.dev)
+
+#### Cách làm truyền thống trước đây (MD5 Signature):
+* **Cơ chế**: Phía Client (Đội AI) ghép `MD5(secret_key + timestamp + payload)` rồi gửi lên Header `X-Signature: <hash>` và `X-Timestamp: <thời gian>`.
+* **Phía Server**: Bạn phải tự viết code trích xuất timestamp, kiểm tra độ lệch thời gian (ví dụ quá 5 phút thì hủy để chống Replay Attack), sau đó băm lại để so khớp chuỗi băm.
+* **Hạn chế**: 
+  1. Thuật toán MD5 ngày nay đã lỗi thời, dễ bị tấn công va chạm (collision attack).
+  2. Bạn phải tự viết code xác thực cho từng endpoint.
+  3. Không kèm sẵn thông tin định danh/phân quyền (claims) chuẩn hóa trong token.
+
+#### Cơ chế hiện đại của Cube.dev (JWT với thuật toán HS256):
+* **Cơ chế**: Cube.dev sử dụng tiêu chuẩn quốc tế **JWT (JSON Web Token - RFC 7519)**. Token gồm 3 phần được mã hóa Base64URL, ngăn cách bởi dấu chấm: `Header.Payload.Signature`.
+  * **Header**: Khai báo thuật toán, ví dụ: `{"alg": "HS256", "typ": "JWT"}`.
+  * **Payload (Claims)**: Chứa thông tin danh tính, vai trò và thời hạn sử dụng:
+    ```json
+    {
+      "sub": "ai-service",
+      "role": "ADMIN",
+      "preferred_username": "admin",
+      "exp": 1893456000
+    }
+    ```
+  * **Signature**: Chữ ký bảo mật được tính bằng:
+    $$	ext{Signature} = 	ext{HMAC-SHA256}(	ext{Base64}(Header) + "." + 	ext{Base64}(Payload), 	ext{CUBEJS\_API\_SECRET})$$
+* **Điểm ưu việt**:
+  1. **Tự động & Toàn vẹn**: Cube.dev được tích hợp sẵn engine kiểm tra JWT. Khi request đến kèm header `Authorization: Bearer <token>`, Cube tự động dùng biến môi trường `CUBEJS_API_SECRET` để verify chữ ký. Nếu ai đó sửa trộm Payload (ví dụ đổi role từ `GUEST` thành `ADMIN`), chữ ký lập tức vô hiệu và Cube từ chối với mã lỗi `403/401`.
+  2. **Stateless**: Cube không cần query database để check session hay token có hợp lệ không, giúp chịu tải hàng nghìn request/giây từ AI Agent mà không tốn tài nguyên.
+
+---
+
+### 5.2. Giải Thích Các Loại API Trên Giao Diện Frontend Integrations Của Cube.dev
+
+Cube.dev cung cấp 4 cổng giao tiếp phục vụ từng mục đích chuyên biệt:
+
+| Loại Endpoint | Giao thức & Cổng | Mô tả chi tiết & Đối tượng sử dụng |
+| :--- | :--- | :--- |
+| **REST API** | HTTP/1.1 (`:4000/cubejs-api/v1/load`) | **Đây là API chính dành cho Đội AI / Backend Services**. Hỗ trợ cả phương thức `POST` (khuyên dùng, gửi JSON body) và `GET` (query params). Trả về dữ liệu JSON có cấu trúc. |
+| **WebSockets** | WebSocket (`ws://:4000/`) | Dành cho các ứng dụng hiển thị thời gian thực (Real-time Dashboards). Kết nối duy trì liên tục hai chiều, server chủ động đẩy dữ liệu khi có thay đổi mà client không cần gửi request hỏi liên tục (polling). |
+| **GraphQL** | HTTP GraphQL (`:4000/cubejs-api/graphql`) | Dành cho các lập trình viên Frontend thích cú pháp GraphQL (`query { shipments { count, sendingProvince } }`) để chủ động chỉ định chính xác các trường cần lấy. |
+| **SQL API** | Postgres Wire Protocol (`:15432`) | Cổng giả lập PostgreSQL. **Dành cho BI tools** (Apache Superset, PowerBI, Tableau, DBeaver) kết nối như một database thực thụ. |
+
+---
+
+### 5.3. Hướng Dẫn Kiểm Thử Trên Postman (Hands-on Postman Testing)
+
+Bạn có thể tải và cài đặt [Postman](https://www.postman.com/downloads/) (hoặc dùng tiện ích Thunder Client / REST Client trên VS Code).
+
+#### Phương thức gọi chuẩn dành cho đội AI:
+* **HTTP Method**: `POST`
+* **Request URL**: `http://localhost:4000/cubejs-api/v1/load`
+* **Headers**:
+  * `Content-Type: application/json`
+  * `Authorization: Bearer <TOKEN_JWT>`
+* **Body** (chọn tab `raw` $
+ightarrow$ `JSON`):
+  ```json
+  {
+    "query": {
+      "measures": [
+        "Shipments.count",
+        "Shipments.totalRevenue"
+      ],
+      "dimensions": [
+        "Shipments.sendingProvince"
+      ],
+      "timeDimensions": [
+        {
+          "dimension": "Shipments.bookingDate",
+          "granularity": "month",
+          "dateRange": "This year"
+        }
+      ]
+    }
+  }
+  ```
+
+---
+
+### 5.4. KỊCH BẢN 1: Kiểm Thử KHÔNG CÓ Keycloak (Dùng JWT HS256 Trực Tiếp - Có Hạn Dùng 1 Phút)
+
+Trong kịch bản này, bạn là Data Engineer quản lý Cube, bạn tự tạo token JWT được ký bởi khóa `CUBEJS_API_SECRET` (`logistics-super-secret`) và bàn giao cho đội AI.
+
+#### Bước 1: Tạo Token JWT Có Hạn Đúng 60 Giây (1 Phút)
+Chạy lệnh Python sau trên Terminal:
+```bash
+python3 -c "import jwt, time; print(jwt.encode({'sub': 'ai-agent-service', 'role': 'REGIONAL_MANAGER', 'preferred_username': 'manager_south', 'iat': int(time.time()), 'exp': int(time.time()) + 60}, 'logistics-super-secret', algorithm='HS256'))"
+```
+* **Giải thích các tham số thời gian**:
+  * `'iat': int(time.time())`: Thời điểm cấp token (Issued At).
+  * `'exp': int(time.time()) + 60`: Hết hạn chính xác sau 60 giây kể từ lúc bấm Enter.
+
+#### Bước 2: Bắn Request trên Postman
+1. Mở Postman, tạo một Request mới:
+   * **Method**: `POST`
+   * **URL**: `http://localhost:4000/cubejs-api/v1/load`
+2. Chọn tab **Authorization**:
+   * **Type**: Chọn `Bearer Token`.
+   * **Token**: Dán chuỗi JWT vừa tạo ở Bước 1 vào.
+3. Chọn tab **Body** $\rightarrow$ tích chọn **raw** $\rightarrow$ chọn **JSON**, dán vào:
+   ```json
+   {
+     "query": {
+       "measures": ["Shipments.count"],
+       "dimensions": ["Shipments.sendingProvince"]
+     }
+   }
+   ```
+4. Bấm **Send NGAY trong vòng 60 giây đầu**:
+   * **Kết quả**: HTTP `200 OK`. Dữ liệu trả về chỉ có của **Hồ Chí Minh** và **Đồng Nai** (do user là `manager_south`).
+
+#### Bước 3: Kiểm Thử Hết Hạn Token (Expire Test)
+* Đợi qua 60 giây $\rightarrow$ Bấm nút **Send** lại trên Postman:
+* **Kết quả thực tế**: Cube chặn đứng ngay lập tức với mã lỗi `403 Forbidden` kèm thông báo:
+  ```json
+  {
+    "error": "TokenExpiredError: jwt expired"
+  }
+  ```
+  *(Điều này chứng minh cơ chế kiểm tra `exp` của Cube.dev hoạt động chuẩn xác đến từng giây!).*
+
+---
+
+### 5.5. KỊCH BẢN 2: Kiểm Thử CÓ Keycloak (Client Credentials + Truyền User Định Danh RLS)
+
+Trong môi trường Enterprise chuẩn:
+- Đội AI kết nối qua giao thức **Machine-to-Machine (`client_credentials`)** để xác thực server.
+- Để Cube biết phải phân quyền RLS cho ai, AI Service sẽ truyền tên người dùng qua Header **`x-user`** (đã được lập trình sẵn tại dòng 68 trong `cube.js`).
+
+#### Bước 1: Lấy Token từ Keycloak bằng Client Credentials
+1. Mở Postman, tạo Request:
+   * **Method**: `POST`
+   * **URL**: `http://localhost:8080/realms/logistics/protocol/openid-connect/token`
+2. Chọn tab **Body** $\rightarrow$ chọn **x-www-form-urlencoded**:
+   * `grant_type`: `client_credentials`
+   * `client_id`: `superset` (Client đã bật Service accounts roles)
+   * `client_secret`: `eoHUQRNM9qxa4XnYvz53rHqf7x3ZRccQ`
+3. Bấm **Send**:
+   * Keycloak sẽ trả về:
+     ```json
+     {
+       "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI...",
+       "expires_in": 300,
+       "refresh_expires_in": 1800,
+       "token_type": "Bearer"
+     }
+     ```
+   * **Ý nghĩa các trường**:
+     * **`access_token`**: Vé vào cửa để gọi API Cube.dev.
+     * **`expires_in: 300`**: Vé vào cửa này có hiệu lực trong **300 giây (5 phút)**.
+     * **`refresh_expires_in: 1800`**: Thời hạn phiên làm việc tối đa (1800 giây = **30 phút**).
+4. Copy toàn bộ giá trị `access_token`.
+
+#### Bước 2: Gọi Cube.dev REST API Kèm User Cần Lọc RLS
+1. Mở Request gọi Cube (`POST http://localhost:4000/cubejs-api/v1/load`).
+2. Vào tab **Authorization** $\rightarrow$ **Bearer Token** $\rightarrow$ Dán `access_token` của Keycloak vào.
+3. Vào tab **Headers**, thêm một header mới:
+   * **Key**: `x-user`
+   * **Value**: `manager_south` (hoặc `manager_north` / `admin`)
+4. Chọn tab **Body** (raw JSON):
+   ```json
+   {
+     "query": {
+       "measures": ["Shipments.count"],
+       "dimensions": ["Shipments.sendingProvince"]
+     }
+   }
+   ```
+5. Bấm **Send**:
+   * **Kết quả**: Cube xác thực token Keycloak hợp lệ, bóc header `x-user: manager_south`, tự động truy vấn ClickHouse và trả về **chỉ số liệu của Miền Nam**! Nếu bạn đổi `x-user` thành `manager_north`, kết quả lập tức đổi sang dữ liệu của Miền Bắc!
+
+---
+
+### 5.6. Tổng Kết: Khuyến Nghị Cho Bạn Khi Bàn Giao API Cho Đội AI
+
+1. **Giai đoạn phát triển (Dev/PoC)**: 
+   * Bạn tạo một JWT token HS256 có hạn sử dụng dài hạn (ví dụ 1 năm) với `preferred_username: "admin"` hoặc `ai_service`.
+   * Cung cấp cho đội AI:
+     - URL REST API: `http://<ip-server>:4000/cubejs-api/v1/load`
+     - Header: `Authorization: Bearer <TOKEN>`
+     - Cung cấp thêm API metadata: `GET http://<ip-server>:4000/cubejs-api/v1/meta` để AI Agent tự đọc danh sách `measures` và `dimensions` hợp lệ.
+2. **Giai đoạn lên Production**:
+   * Chuyển sang mô hình **Keycloak Client Credentials**: Cấp `client_id` và `client_secret` của Realm `logistics` cho hệ thống AI tự động refresh token định kỳ.
 
 ---
 

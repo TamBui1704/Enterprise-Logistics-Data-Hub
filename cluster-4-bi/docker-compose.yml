@@ -18,6 +18,7 @@ services:
       - CUBEJS_DEV_MODE=true
       - CUBEJS_API_SECRET=logistics-super-secret
       - CUBEJS_PG_SQL_PORT=5432
+      - CUBEJS_SQL_USER_PASSWORD=logistics-super-secret-sql-pass
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=logistics
       - NODE_OPTIONS=--max-old-space-size=1024
@@ -46,11 +47,11 @@ services:
     environment:
       SUPERSET_SECRET_KEY: "eoHUQRNM9qxa4XnYvz53rHqf7x3ZRccQ"
       ENABLE_KEYCLOAK: "true"
-      KEYCLOAK_INTERNAL_URL: "http://keycloak:8080"
-      KEYCLOAK_EXTERNAL_URL: "http://localhost:8080"
+      KEYCLOAK_INTERNAL_URL: "http://sso.192.168.63.106.nip.io:8080"
+      KEYCLOAK_EXTERNAL_URL: "http://sso.192.168.63.106.nip.io:8080"
       KEYCLOAK_REALM: "logistics"
       KEYCLOAK_CLIENT_ID: "superset"
-      KEYCLOAK_CLIENT_SECRET: "super-secret-keycloak-client-secret"
+      KEYCLOAK_CLIENT_SECRET: "eoHUQRNM9qxa4XnYvz53rHqf7x3ZRccQ"
     volumes:
       - superset_home:/app/superset_home
       - ./superset_patch/helpers.py:/app/superset/models/helpers.py

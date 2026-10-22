@@ -69,14 +69,23 @@ module.exports = {
 
     // Trích xuất từ JWT Bearer token nếu có
     if (!username && req.headers?.authorization) {
-      try {
-        const token = req.headers.authorization.replace(/^Bearer\s+/i, '');
-        const payloadBase64 = token.split('.')[1];
-        if (payloadBase64) {
-          const payloadJson = JSON.parse(Buffer.from(payloadBase64, 'base64').toString('utf8'));
-          username = payloadJson.preferred_username || payloadJson.sub || payloadJson.username;
+      const token = req.headers.authorization.replace(/^Bearer\s+/i, '');
+      const payloadBase64 = token.split('.')[1];
+      if (payloadBase64) {
+        let payloadJson;
+        try {
+          payloadJson = JSON.parse(Buffer.from(payloadBase64, 'base64').toString('utf8'));
+        } catch (e) {
+          throw new Error('InvalidToken: Malformed JWT');
         }
-      } catch (e) {}
+
+        // 1. Kiểm tra thời hạn hết hạn của Token (exp)
+        if (payloadJson.exp && Math.floor(Date.now() / 1000) > payloadJson.exp) {
+          throw new Error('TokenExpiredError: jwt expired');
+        }
+
+        username = payloadJson.preferred_username || payloadJson.sub || payloadJson.username;
+      }
     }
 
     // Mặc định cho Developer Playground UI
@@ -106,11 +115,18 @@ module.exports = {
   checkSqlAuth: async (req, user, password) => {
     if (!user) throw new Error('Unauthorized: Thiếu Username kết nối!');
 
+    // 1. Kiểm tra Mật khẩu bắt buộc (Không cho phép bypass/skip)
+    const REQUIRED_SQL_PASSWORD = process.env.CUBEJS_SQL_USER_PASSWORD || 'logistics-super-secret-sql-pass';
+    if (!password || password !== REQUIRED_SQL_PASSWORD) {
+      throw new Error(`Unauthorized: Sai mật khẩu kết nối SQL API cho user '${user}'!`);
+    }
+
+    // 2. Tra cứu ma trận phân quyền từ ClickHouse
     const perm = await getUserPermissionsFromClickHouse(user);
 
     return {
-      password: password,
-      skipPasswordCheck: true, // Cho phép kết nối trực tiếp trong giai đoạn test nội bộ
+      password: REQUIRED_SQL_PASSWORD,
+      skipPasswordCheck: false, // Bắt buộc kiểm tra mật khẩu trong môi trường Production
       securityContext: {
         username: user,
         role: perm.role,

@@ -104,7 +104,7 @@ def sync_cube_to_superset():
         if not cube_db:
             cube_db = Database(
                 database_name="Cube Semantic Layer",
-                sqlalchemy_uri="postgresql://admin:admin@cube_semantic_layer:5432/default",
+                sqlalchemy_uri="postgresql://admin:logistics-super-secret-sql-pass@cube_semantic_layer:5432/default",
                 impersonate_user=True
             )
             db.session.add(cube_db)
