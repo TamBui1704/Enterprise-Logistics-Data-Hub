@@ -1,12 +1,7 @@
-
 services:
   # -------------------------------------------------------------------
   # 1. Database Nguồn: Oracle Database XE (Tích hợp sẵn LogMiner & CDC)
   # -------------------------------------------------------------------
-  # Sử dụng `quay.io/debezium/example-oracle:2.5.0.Final`:
-  # - Đã bật sẵn ARCHIVELOG mode & Supplemental Logging cho Debezium LogMiner
-  # - Khởi tạo sẵn CDB (ORCLCDB), PDB (ORCLPDB1), user `c##dbzuser` (password: dbz)
-  # - Tối ưu tài nguyên nhẹ (~1.5GB - 2GB RAM), phù hợp cho máy RAM 12GB
   oracle-db:
     image: gvenzl/oracle-free:23.3-slim
     container_name: source_oracle_db
@@ -32,7 +27,7 @@ services:
       - logistics_net
 
   # -------------------------------------------------------------------
-  # 2. Apache Kafka (KRaft Mode - Không dùng Zookeeper để tiết kiệm RAM)
+  # 2. Apache Kafka (KRaft Mode + SASL/PLAIN + Kafka Topic ACLs)
   # -------------------------------------------------------------------
   kafka:
     image: apache/kafka:3.7.0
@@ -41,39 +36,51 @@ services:
       - "9092:9092"
     volumes:
       - ${KAFKA_DATA_VOLUME:-kafka_data}:/tmp/kraft-combined-logs
+      - ./kafka_config/kafka_server_jaas.conf:/opt/kafka/config/kafka_server_jaas.conf
+      - ./kafka_config/admin-client.properties:/opt/kafka/config/admin-client.properties
+      - ./kafka_config/spark-client.properties:/opt/kafka/config/spark-client.properties
+      - ./kafka_config/debezium-client.properties:/opt/kafka/config/debezium-client.properties
     environment:
       KAFKA_NODE_ID: 1
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
-      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092'
+      KAFKA_OPTS: "-Djava.security.auth.login.config=/opt/kafka/config/kafka_server_jaas.conf"
+      KAFKA_SASL_ENABLED_MECHANISMS: 'PLAIN'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,SASL_PLAINTEXT:SASL_PLAINTEXT,SASL_HOST:SASL_PLAINTEXT'
+      KAFKA_ADVERTISED_LISTENERS: 'SASL_PLAINTEXT://kafka:29092,SASL_HOST://localhost:9092'
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_PROCESS_ROLES: 'broker,controller'
       KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29093'
-      KAFKA_LISTENERS: 'PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093,PLAINTEXT_HOST://0.0.0.0:9092'
-      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
+      KAFKA_LISTENERS: 'SASL_PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093,SASL_HOST://0.0.0.0:9092'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'SASL_PLAINTEXT'
+      KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL: 'PLAIN'
       KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
       KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
       KAFKA_CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
       KAFKA_NUM_PARTITIONS: 3
       KAFKA_LOG_RETENTION_HOURS: 168
       KAFKA_HEAP_OPTS: "-Xmx512m -Xms512m"
+      KAFKA_AUTHORIZER_CLASS_NAME: 'org.apache.kafka.metadata.authorizer.StandardAuthorizer'
+      KAFKA_SUPER_USERS: 'User:admin;User:ANONYMOUS'
+      KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: 'false'
     deploy:
       resources:
         limits:
           memory: 768M
     healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 --command-config /opt/kafka/config/admin-client.properties"]
+      - ./kafka_config/spark-client.properties:/opt/kafka/config/spark-client.properties
+      - ./kafka_config/debezium-client.properties:/opt/kafka/config/debezium-client.properties
       interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 15
       start_period: 30s
     networks:
       - logistics_net
 
   # -------------------------------------------------------------------
-  # 2.1 Tự động tạo sẵn CDC Fact Topics (Đảm bảo Spark Streaming không lỗi)
+  # 2.1 Tự động tạo Topics & Phân quyền ACLs (Đảm bảo Producer/Consumer bảo mật)
   # -------------------------------------------------------------------
   kafka-init-topics:
     image: apache/kafka:3.7.0
@@ -81,20 +88,17 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
-    entrypoint: [ "/bin/sh", "-c" ]
-    command: |
-      "
-      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists --topic cdc_logistics_oracle.DEBEZIUM.SHIPMENT_BOOKINGS --partitions 3 --replication-factor 1
-      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists --topic cdc_logistics_oracle.DEBEZIUM.SHIPMENT_EVENT_TRACKINGS --partitions 3 --replication-factor 1
-      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists --topic cdc_logistics_oracle.DEBEZIUM.DELIVERY_REMUNERATIONS --partitions 3 --replication-factor 1
-      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists --topic cdc_logistics_oracle.DEBEZIUM.RETURN_REMUNERATIONS --partitions 3 --replication-factor 1
-      echo 'CDC Fact Topics ready!'
-      "
+    volumes:
+      - ./kafka_config/admin-client.properties:/opt/kafka/config/admin-client.properties
+      - ./kafka_config/spark-client.properties:/opt/kafka/config/spark-client.properties
+      - ./kafka_config/debezium-client.properties:/opt/kafka/config/debezium-client.properties
+      - ./scripts/init_kafka_topics_and_acls.sh:/init_kafka_topics_and_acls.sh
+    entrypoint: [ "/bin/bash", "/init_kafka_topics_and_acls.sh" ]
     networks:
       - logistics_net
 
   # -------------------------------------------------------------------
-  # 3. Debezium CDC Connector
+  # 3. Debezium CDC Connector (Basic Auth REST API + SASL/PLAIN tới Kafka)
   # -------------------------------------------------------------------
   debezium:
     image: debezium/connect:2.5.0.Final
@@ -115,8 +119,22 @@ services:
       KEY_CONVERTER_SCHEMAS_ENABLE: "false"
       VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
       HEAP_OPTS: "-Xmx512m -Xms512m"
+      CONNECT_REST_EXTENSION_CLASSES: "org.apache.kafka.connect.rest.basic.auth.extension.BasicAuthSecurityRestExtension"
+      KAFKA_OPTS: "-Djava.security.auth.login.config=/kafka/config/connect-jaas.conf"
+      # SASL Credentials kết nối tới Kafka Broker
+      CONNECT_SECURITY_PROTOCOL: SASL_PLAINTEXT
+      CONNECT_SASL_MECHANISM: PLAIN
+      CONNECT_SASL_JAAS_CONFIG: 'org.apache.kafka.common.security.plain.PlainLoginModule required username="debezium_user" password="DebeziumCDCKey2026!";'
+      CONNECT_PRODUCER_SECURITY_PROTOCOL: SASL_PLAINTEXT
+      CONNECT_PRODUCER_SASL_MECHANISM: PLAIN
+      CONNECT_PRODUCER_SASL_JAAS_CONFIG: 'org.apache.kafka.common.security.plain.PlainLoginModule required username="debezium_user" password="DebeziumCDCKey2026!";'
+      CONNECT_CONSUMER_SECURITY_PROTOCOL: SASL_PLAINTEXT
+      CONNECT_CONSUMER_SASL_MECHANISM: PLAIN
+      CONNECT_CONSUMER_SASL_JAAS_CONFIG: 'org.apache.kafka.common.security.plain.PlainLoginModule required username="debezium_user" password="DebeziumCDCKey2026!";'
     volumes:
       - ./debezium/ojdbc8-21.9.0.0.jar:/kafka/connect/debezium-connector-oracle/ojdbc8.jar
+      - ./debezium/connect-jaas.conf:/kafka/config/connect-jaas.conf
+      - ./debezium/connect-users.properties:/kafka/config/connect-users.properties
     deploy:
       resources:
         limits:
@@ -130,17 +148,23 @@ services:
       - logistics_net
 
   # -------------------------------------------------------------------
-  # 4. Kafka UI (Giao diện Web xem Topics & CDC Messages)
+  # 4. Kafka UI (Giao diện Web xem Topics & CDC Messages + Xác thực Form)
   # -------------------------------------------------------------------
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     container_name: kafka_ui
     ports:
-      - "8080:8080"
+      - "8082:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: local-logistics-cluster
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL: SASL_PLAINTEXT
+      KAFKA_CLUSTERS_0_PROPERTIES_SASL_MECHANISM: PLAIN
+      KAFKA_CLUSTERS_0_PROPERTIES_SASL_JAAS_CONFIG: 'org.apache.kafka.common.security.plain.PlainLoginModule required username="admin" password="AdminSecretKey2026!";'
       JAVA_OPTS: "-Xmx384m -Xms128m"
+      AUTH_TYPE: "LOGIN_FORM"
+      SPRING_SECURITY_USER_NAME: "admin"
+      SPRING_SECURITY_USER_PASSWORD: "AdminSecretKey2026!"
     deploy:
       resources:
         limits:
@@ -157,7 +181,3 @@ networks:
 volumes:
   oracle_data_23c:
   kafka_data:
-
-
-
-
