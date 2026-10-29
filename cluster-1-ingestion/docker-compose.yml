@@ -70,8 +70,6 @@ services:
           memory: 768M
     healthcheck:
       test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 --command-config /opt/kafka/config/admin-client.properties"]
-      - ./kafka_config/spark-client.properties:/opt/kafka/config/spark-client.properties
-      - ./kafka_config/debezium-client.properties:/opt/kafka/config/debezium-client.properties
       interval: 10s
       timeout: 5s
       retries: 15
